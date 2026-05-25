@@ -18,6 +18,22 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from datetime import datetime
+from functools import lru_cache
+import logging
+import unicodedata
+
+# -------------------------
+# 로깅 설정
+# -------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("paper_system.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Namespaces used in Word XML
 NS = {
@@ -161,36 +177,53 @@ def generate_bibliography_from_edited(csv_path):
     """
     Generate a deduplicated bibliography list from the edited CSV.
     Returns list of formatted reference strings (matched_ref) in order of appearance.
-    Improved deduplication: uses DOI first, then title/author fallback.
+    Deduplication 우선순위: DOI > ISBN > normalized title+author
     """
     records = read_edited_footnotes(csv_path)
-    seen_dois = set()
-    seen_titles = set()  # For fallback when DOI missing
+    seen = set()  # ("DOI"|"ISBN"|"NORM", value) 튜플로 충돌 방지
     bibliography = []
+
+    isbn_pattern = re.compile(
+        r'(?:ISBN(?:-1[03])?[:\s]*)?(97[89][- ]?(?:\d[- ]?){9}\d|\d{9}[\dXx])'
+    )
+
+    def _normalize(s):
+        """비교용 정규화: 소문자, 구두점 제거, 공백 단일화"""
+        s = re.sub(r'[^\w\s]', '', s.lower())
+        return re.sub(r'\s+', ' ', s).strip()
 
     for rec in records:
         ref = rec['matched_ref'].strip()
         if not ref:
             continue
 
-        # Try to get DOI from the record (if available in extended CSV)
+        # 1. DOI 우선 (가장 신뢰할 수 있는 식별자)
         doi = rec.get('doi', '').strip().lower()
-        if doi and doi not in seen_dois:
-            seen_dois.add(doi)
-            bibliography.append(ref)
+        if doi:
+            key = ("DOI", doi)
+            if key not in seen:
+                seen.add(key)
+                bibliography.append(ref)
+            continue  # DOI 있으면 아래 fallback 불필요
+
+        # 2. ISBN (도서류)
+        isbn_match = isbn_pattern.search(ref)
+        if isbn_match:
+            isbn = re.sub(r'[^0-9X]', '', isbn_match.group(0).upper())
+            key = ("ISBN", isbn)
+            if key not in seen:
+                seen.add(key)
+                bibliography.append(ref)
             continue
 
-        # Fallback: normalize title and author for deduplication
-        # Extract from matched_ref or use fn_text if matched_ref empty
-        text_for_match = ref if ref else rec['fn_text']
-        # Simple normalization: lowercase, remove extra spaces/punctuation
-        normalized = re.sub(r'[^\w\s]', '', text_for_match.lower())
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-
-        if normalized and normalized not in seen_titles:
-            seen_titles.add(normalized)
+        # 3. Normalized title+author fallback
+        norm = _normalize(ref)
+        key = ("NORM", norm)
+        if norm and key not in seen:
+            seen.add(key)
             bibliography.append(ref)
 
+    logger.info(f"참고문헌 {len(bibliography)}건 생성 (원본 {len(records)}건에서 중복 제거)")
     return bibliography
 
 
@@ -281,10 +314,12 @@ def clean_reference(fn_text):
     }
 
 
+@lru_cache(maxsize=2048)
 def query_crossref(cleaned_query):
     """
     Crossref REST API를 호출하여 메타데이터를 검색합니다.
     성공 시 Crossref item JSON을 반환하고, 실패 시 None을 반환합니다.
+    결과는 lru_cache로 캐싱됩니다 (중복 API 호출 방지).
     """
     if not cleaned_query or not isinstance(cleaned_query, str):
         return None
@@ -292,29 +327,30 @@ def query_crossref(cleaned_query):
     url = "https://api.crossref.org/works"
     params = {
         "query": cleaned_query,
-        "rows": 3  # 상위 3개 결과만 가져옴
+        "rows": 3
     }
     headers = {
-        "User-Agent": "PaperAutoGenerator/1.0 (mailto:user@example.com)"  # 실제 이메일로 변경 필요
+        "User-Agent": "PaperAutoGenerator/1.0 (mailto:user@example.com)"
     }
 
+    logger.info(f"Crossref 쿼리: '{cleaned_query[:60]}'")
     try:
         response = requests.get(url, params=params, headers=headers, timeout=10)
-        response.raise_for_status()  # HTTP 오류 발생 시 예외
+        response.raise_for_status()
         data = response.json()
 
         if data.get("status") == "ok" and data.get("message", {}).get("items"):
             items = data["message"]["items"]
             if items:
-                return items[0]  # 가장 관련성 높은 첫 번째 결과 반환
+                logger.debug(f"Crossref 결과 {len(items)}건 반환")
+                return items[0]
+        logger.warning(f"Crossref 결과 없음: '{cleaned_query[:60]}'")
         return None
     except requests.exceptions.RequestException as e:
-        # 네트워크 오류, 타임아웃, HTTP 오류 등
-        print(f"Crossref query failed: {e}")
+        logger.warning(f"Crossref 네트워크 오류: {e}")
         return None
     except (KeyError, ValueError, json.JSONDecodeError) as e:
-        # JSON 파싱 오류 등
-        print(f"Failed to parse Crossref response: {e}")
+        logger.error(f"Crossref 응답 파싱 실패: {e}")
         return None
 
 
@@ -406,8 +442,9 @@ def auto_match_reference(fn_text):
         if not parsed or not parsed["cleaned"]:
             return None
 
-        # 2. Crossref 쿼리
-        crossref_item = query_crossref(parsed["cleaned"])
+        # 2. Crossref 쿼리 (정규화된 키로 캐시 적중률 향상)
+        normalized_query = parsed["cleaned"].lower().strip()
+        crossref_item = query_crossref(normalized_query)
         if not crossref_item:
             return None
 
@@ -415,6 +452,7 @@ def auto_match_reference(fn_text):
         confidence = calculate_confidence(parsed, crossref_item)
         # 신뢰도가 troppo 낮으면 무시 (임계값 0.5)
         if confidence < 0.5:
+            logger.info(f"낮은 신뢰도 ({confidence:.2f}) — 매칭 제외: '{fn_text[:50]}'")
             return None
 
         # 4. 매칭된 참고문헌 문자열 생성 (간단한形式)
@@ -492,8 +530,31 @@ def auto_match_reference(fn_text):
         }
     except Exception as e:
         # 예외 발생 시 조용히 fallback (None 반환)
-        print(f"Auto match reference failed: {e}")
+        logger.error(f"auto_match_reference 실패: {e}")
         return None
+
+
+def _escape_bibtex(text: str) -> str:
+    """BibTeX 특수문자를 이스케이프합니다. Zotero/JabRef/LaTeX 호환성 보장."""
+    if not text:
+        return ""
+    # Unicode NFC 정규화 (한국어 등 다국어 안정성)
+    text = unicodedata.normalize("NFC", text)
+    replacements = [
+        ('\\', '\\textbackslash{}'),  # 반드시 첫 번째로 처리
+        ('&',  '\\&'),
+        ('%',  '\\%'),
+        ('$',  '\\$'),
+        ('#',  '\\#'),
+        ('_',  '\\_'),
+        ('{',  '\\{'),
+        ('}',  '\\}'),
+        ('~',  '\\textasciitilde{}'),
+        ('^',  '\\textasciicircum{}'),
+    ]
+    for char, escape in replacements:
+        text = text.replace(char, escape)
+    return text
 
 
 def bibliography_to_bibtex(entries):
@@ -506,6 +567,7 @@ def bibliography_to_bibtex(entries):
     if not entries:
         return ""
 
+    logger.info(f"BibTeX 생성 시작: {len(entries)}건")
     bibtex_lines = []
     for i, entry in enumerate(entries):
         # 항목 유형 판단 (간단히 article 또는 book으로 가정)
@@ -538,29 +600,26 @@ def bibliography_to_bibtex(entries):
 
         bibtex_lines.append(f"@{entry_type}{{{cite_key},")
 
-        # 필드 추가 (존재하는 경우에만)
         fields = []
         if author:
-            fields.append(f"  author = {{{author}}}")
+            fields.append(f"  author = {{{_escape_bibtex(author)}}}")
         title = entry.get("title") or entry.get("container-title")
         if title:
-            fields.append(f"  title = {{{title}}}")
+            fields.append(f"  title = {{{_escape_bibtex(title)}}}")
         if year:
             fields.append(f"  year = {{{year}}}")
         journal = entry.get("journal") or entry.get("container-title")
         if journal and entry_type == "article":
-            fields.append(f"  journal = {{{journal}}}")
+            fields.append(f"  journal = {{{_escape_bibtex(journal)}}}")
         publisher = entry.get("publisher")
         if publisher and entry_type == "book":
-            fields.append(f"  publisher = {{{publisher}}}")
+            fields.append(f"  publisher = {{{_escape_bibtex(publisher)}}}")
         doi = entry.get("doi")
         if doi:
-            fields.append(f"  doi = {{https://doi.org/{doi}}}")
-        # Abstract를 note 필드에 추가 (있는 경우)
+            fields.append(f"  doi = {{https://doi.org/{_escape_bibtex(doi)}}}")
         abstract = entry.get("abstract")
         if abstract:
-            # BibTeX에서 специальные символы экранируются просто фигурными скобками
-            fields.append(f"  note = {{{abstract}}}")
+            fields.append(f"  note = {{{_escape_bibtex(abstract)}}}")
 
         bibtex_lines.extend(fields)
         bibtex_lines.append("}")
