@@ -90,6 +90,80 @@ def looks_like_short_citation(text):
     # Short citations often end with a page number
     return bool(re.search(r",\s*(p\.\s*)?\d+\s*\.?$", text))
 
+def build_query(parsed_ref):
+    """Build a search query from parsed reference parts"""
+    if not parsed_ref:
+        return ""
+
+    title = parsed_ref.get("title", "")
+    author = parsed_ref.get("author", "")
+    year = parsed_ref.get("year", "")
+
+    query_parts = [title, author, year]
+    query = " ".join(part for part in query_parts if part)
+    return query.strip()
+
+def format_reference_from_crossref(crossref_item):
+    """Format a reference string from Crossref item"""
+    if not crossref_item:
+        return ""
+
+    # Extract authors
+    authors = crossref_item.get("author", [])
+    author_str = ""
+    if authors and isinstance(authors, list):
+        author_list = []
+        for auth in authors[:2]:  # máximo 2 authors
+            if isinstance(auth, dict):
+                family = auth.get("family", "")
+                given = auth.get("given", "")
+                if family and given:
+                    author_list.append(f"{family} {given}")
+                elif family:
+                    author_list.append(family)
+            elif isinstance(auth, str):
+                author_list.append(auth)
+        author_str = ", ".join(author_list)
+        if len(authors) > 2:
+            author_str += " et al."
+
+    # Extract title
+    title_list = crossref_item.get("title", [])
+    title_str = ""
+    if title_list and isinstance(title_list, list) and title_list:
+        title_str = title_list[0]
+    elif isinstance(title_list, str):
+        title_str = title_list
+
+    # Extract year
+    year_str = ""
+    if crossref_item.get("issued"):
+        date_parts = crossref_item["issued"].get("date-parts", [[]])
+        if date_parts and date_parts[0]:
+            year_str = str(date_parts[0][0])
+
+    # Extract container title (journal/book)
+    container_title = ""
+    if crossref_item.get("container-title"):
+        cont_list = crossref_item["container-title"]
+        if isinstance(cont_list, list) and cont_list:
+            container_title = cont_list[0]
+        elif isinstance(cont_list, str):
+            container_title = cont_list
+
+    # Build reference string
+    parts = []
+    if author_str:
+        parts.append(author_str)
+    if title_str:
+        parts.append(f'"{title_str}"')
+    if container_title:
+        parts.append(container_title)
+    if year_str:
+        parts.append(year_str)
+
+    return ". ".join([p for p in parts if p])
+
 # Namespaces used in Word XML
 NS = {
     'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
@@ -138,6 +212,9 @@ def extract_footnotes(docx_path):
             if t.text:
                 texts.append(t.text)
         fn_text = ''.join(texts).strip()
+        # Skip if empty or just a footnote number pattern like [1], [2], etc.
+        if not fn_text or re.match(r'^\[\d+\]$', fn_text):
+            continue
         fn_elements[fid] = {
             'fn_id': fid,
             'fn_text': fn_text,
@@ -475,16 +552,19 @@ def calculate_confidence(parsed_ref, crossref_item):
     return max(0.0, min(1.0, score))
 
 
-def auto_match_reference(fn_text):
+def auto_match_reference(fn_text, fn_id=None):
     """
-    각주 텍스트를 분석하여 Crossref에서 자동으로 참고문헌을 매칭합니다.
+    각주 텍스트를 분석하여 참고문헌을 매칭합니다.
+    먼저 citation memory에서 반복 citation 여부를 확인하고,
+    없으면 Crossref를 통해 메타데이터를 enrichment합니다.
     성공 시 다음과 같은 딕셔너리를 반환합니다:
         {
-            "matched_ref": "...",  # 매칭된 참고문헌 문자열 (Crossref에서 생성)
-            "doi": "...",          # DOI
+            "matched_ref": "...",  # 매칭된 참고문헌 문자열
+            "doi": "...",          # DOI (있는 경우)
             "confidence": 0.92,    # 신뢰도 점수
-            "source": "crossref",  # 출처
-            "abstract": "..."      # 초록/요약 (optional)
+            "source": "memory" 또는 "crossref",
+            "citation_type": "FULL", "REPEATED", 또는 "SHORT",
+            "fn_id": original full citation's fn_id (for REPEATED)
         }
     실패 시 None을 반환합니다.
     """
@@ -494,97 +574,80 @@ def auto_match_reference(fn_text):
     try:
         # 1. 각주 텍스트 정제
         parsed = clean_reference(fn_text)
-        if not parsed or not parsed["cleaned"]:
+        if not parsed:
             return None
 
-        # 2. Crossref 쿼리 (정규화된 키로 캐시 적중률 향상)
-        normalized_query = parsed["cleaned"].lower().strip()
-        crossref_item = query_crossref(normalized_query)
-        if not crossref_item:
+        author = parsed.get("author", "")
+        title = parsed.get("title", "")
+        year = parsed.get("year", "")
+        key = normalize_key(author, title)
+
+        # 2. SHORT citation 감지
+        if looks_like_short_citation(fn_text):
+            if key in citation_memory:
+                memory = citation_memory[key]
+                memory["repeat_count"] += 1
+                return {
+                    "citation_type": "REPEATED",
+                    "matched_ref": memory["full_reference"],
+                    "confidence": 0.95,
+                    "source": "memory",
+                    "fn_id": memory.get("first_seen_fn_id"),
+                    "repeat_count": memory["repeat_count"]
+                }
+            # 메모리에 없는 short citation은 처리 불가
             return None
 
-        # 3. 신뢰도 계산
-        confidence = calculate_confidence(parsed, crossref_item)
-        # 신뢰도가 troppo 낮으면 무시 (임계값 0.5)
-        if confidence < 0.5:
-            logger.info(f"낮은 신뢰도 ({confidence:.2f}) — 매칭 제외: '{fn_text[:50]}'")
-            return None
+        # 3. FULL citation 감지
+        if looks_like_full_citation(fn_text):
+            # 메모리에 처음 보는 citation이면 저장
+            if key not in citation_memory:
+                citation_memory[key] = {
+                    "full_reference": fn_text,
+                    "author": author,
+                    "title": title,
+                    "year": year,
+                    "first_seen_fn_id": fn_id,
+                    "repeat_count": 0,
+                    "crossref": None  # 나중에 enrichment
+                }
+            # 메모리에 있는 경우 enrichment 시도 (없으면 무시)
+            current = citation_memory[key]
+            if current["crossref"] is None:
+                # Crossref 쿼리 (title + author + year로 구성)
+                query = build_query(parsed)
+                if query:
+                    crossref_item = query_crossref(query)
+                    if crossref_item:
+                        current["crossref"] = crossref_item
 
-        # 4. 매칭된 참고문헌 문자열 생성 (간단한形式)
-        # Crossref 항목에서 저자, 제목, 연도, 출판처 등을 조합
-        authors = crossref_item.get("author", [])
-        author_str = ""
-        if authors and isinstance(authors, list):
-            author_list = []
-            for auth in authors[:2]:  # 최대 2명의 저자만 표시
-                if isinstance(auth, dict):
-                    family = auth.get("family", "")
-                    given = auth.get("given", "")
-                    if family and given:
-                        author_list.append(f"{family} {given}")
-                    elif family:
-                        author_list.append(family)
-                elif isinstance(auth, str):
-                    author_list.append(auth)
-            author_str = ", ".join(author_list)
-            if len(authors) > 2:
-                author_str += " et al."
+            # 매칭된 참고문헌 문자열 생성
+            if current["crossref"]:
+                # Crossref 데이터가 있으면それを使ってフォーマット
+                matched_ref = format_reference_from_crossref(current["crossref"])
+                doi = current["crossref"].get("DOI", "")
+                confidence = 0.9  # Crossref enrichment 신뢰도
+                source = "crossref"
+            else:
+                # Crossref 데이터がない場合は、元のフル参照を使用
+                matched_ref = fn_text
+                doi = ""
+                confidence = 0.85  # 메모리만 있는 경우 약간 낮은 신뢰도
+                source = "memory"
 
-        title_list = crossref_item.get("title", [])
-        title_str = ""
-        if title_list and isinstance(title_list, list) and title_list:
-            title_str = title_list[0]
-        elif isinstance(title_list, str):
-            title_str = title_list
+            return {
+                "citation_type": "FULL",
+                "matched_ref": matched_ref,
+                "confidence": confidence,
+                "source": source,
+                "doi": doi,
+                "fn_id": fn_id
+            }
 
-        # 연도 추출
-        year_str = ""
-        if crossref_item.get("issued"):
-            date_parts = crossref_item["issued"].get("date-parts", [[]])
-            if date_parts and date_parts[0]:
-                year_str = str(date_parts[0][0])
+        # 4. weder full nor short - 처리 불가
+        return None
 
-        # 출판처 또는 저널 추출
-        container_title = ""
-        if crossref_item.get("container-title"):
-            cont_list = crossref_item["container-title"]
-            if isinstance(cont_list, list) and cont_list:
-                container_title = cont_list[0]
-            elif isinstance(cont_list, str):
-                container_title = cont_list
-
-        # 참고문헌 문자열 조합 (간단한形式)
-        parts = []
-        if author_str:
-            parts.append(author_str)
-        if title_str:
-            parts.append(f'"{title_str}"')
-        if container_title:
-            parts.append(container_title)
-        if year_str:
-            parts.append(year_str)
-        matched_ref = ". ".join([p for p in parts if p])
-
-        # DOI 추출
-        doi = crossref_item.get("DOI", "")
-
-        # 초록/요약 추출 (있는 경우)
-        abstract = ""
-        if crossref_item.get("abstract"):
-            # HTML 태그 제거 및 정리
-            abstract_raw = crossref_item["abstract"]
-            abstract = re.sub(r'<[^>]+>', '', abstract_raw)  # 간단한 HTML 태그 제거
-            abstract = re.sub(r'\s+', ' ', abstract).strip()  # 다중 공백 제거
-
-        return {
-            "matched_ref": matched_ref,
-            "doi": doi,
-            "confidence": round(confidence, 2),
-            "source": "crossref",
-            "abstract": abstract
-        }
     except Exception as e:
-        # 예외 발생 시 조용히 fallback (None 반환)
         logger.error(f"auto_match_reference 실패: {e}")
         return None
 

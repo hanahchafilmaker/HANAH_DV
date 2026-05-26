@@ -114,6 +114,7 @@ class ThesisApp:
         ttk.Label(header, text="#", width=4).pack(side=tk.LEFT)
         ttk.Label(header, text="원본 각주", width=25, anchor="w").pack(side=tk.LEFT, padx=5)
         ttk.Label(header, text="참고문헌 (편집)", width=30, anchor="w").pack(side=tk.LEFT, padx=5)
+        ttk.Label(header, text="유형", width=8).pack(side=tk.LEFT)
         ttk.Label(header, text="매칭", width=8).pack(side=tk.LEFT)
         ttk.Label(header, text="확신도", width=8).pack(side=tk.LEFT)
         ttk.Label(header, text="DOI", width=10).pack(side=tk.LEFT)
@@ -131,6 +132,9 @@ class ThesisApp:
             ref = tk.Text(row, height=3, width=30, wrap=tk.WORD)
             ref.insert(tk.END, '')  # start empty for user to fill
             ref.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=False)
+            # Citation type label
+            type_label = ttk.Label(row, text="", width=8)
+            type_label.pack(side=tk.LEFT, padx=2)
             # Match checkbox
             matched_var = tk.BooleanVar(value=False)
             chk = ttk.Checkbutton(row, variable=matched_var)
@@ -148,6 +152,7 @@ class ThesisApp:
                 'fn_id': fn['fn_id'],
                 'orig_widget': orig,
                 'ref_widget': ref,
+                'type_label': type_label,
                 'matched_var': matched_var,
                 'conf_label': conf_label,
                 'doi_label': doi_label,
@@ -155,10 +160,10 @@ class ThesisApp:
                 'fn_text': fn['fn_text']
             })
 
-            # Start auto-matching in a separate thread to avoid UI freeze
-            threading.Thread(target=self._perform_auto_match,
-                           args=(fn['fn_text'], fn['fn_id'], conf_label, doi_label),
-                           daemon=True).start()
+            # Store UI elements for later processing
+            fn['conf_label'] = conf_label
+            fn['doi_label'] = doi_label
+            fn['ref_widget'] = ref
 
         # Store references for later use
         self.editor_win = editor
@@ -166,22 +171,48 @@ class ThesisApp:
         self.right_frame = right_frame
         self.canvas = canvas
 
-    def _perform_auto_match(self, fn_text, fn_id, conf_label, doi_label):
-        """Perform auto-matching in background thread and update UI"""
-        try:
-            result = fm.auto_match_reference(fn_text)
-            if result:
-                self.auto_match_results[fn_id] = result
-                # Update UI in main thread
-                self.root.after(0, lambda: self._update_auto_match_ui(
-                    fn_id, result, conf_label, doi_label))
-        except Exception as e:
-            print(f"Auto-match failed for fn_id {fn_id}: {e}")
+        # Start a single thread to process all footnotes in order
+        threading.Thread(target=self._process_all_footnotes_matching, daemon=True).start()
 
-    def _update_auto_match_ui(self, fn_id, result, conf_label, doi_label):
-        """Update UI with auto-match results"""
+
+    def _process_all_footnotes_matching(self):
+        """Process all footnotes in order for citation matching"""
+        try:
+            # Reset citation memory for this document
+            fm.reset_citation_memory()
+
+            # Process footnotes in order
+            for fn in self.footnotes:
+                fn_text = fn['fn_text']
+                fn_id = fn['fn_id']
+
+                # Perform auto-matching
+                result = fm.auto_match_reference(fn_text, fn_id)
+
+                if result:
+                    self.auto_match_results[fn_id] = result
+                    # Update UI in main thread
+                    self.root.after(0, lambda fid=fn_id, res=result: self._update_auto_match_ui_threadsafe(
+                        fid, res,
+                        self.footnotes[fid-1]['conf_label'] if fid-1 < len(self.footnotes) else None,
+                        self.footnotes[fid-1]['doi_label'] if fid-1 < len(self.footnotes) else None,
+                        self.footnotes[fid-1]['type_label'] if fid-1 < len(self.footnotes) else None))
+
+        except Exception as e:
+            print(f"Error in _process_all_footnotes_matching: {e}")
+
+    def _update_auto_match_ui_threadsafe(self, fn_id, result, conf_label, doi_label, type_label=None):
+        """Thread-safe update of UI with auto-match results"""
+        if conf_label is None or doi_label is None:
+            return
+
         conf_text = f"{result['confidence']*100:.0f}%"
         conf_label.config(text=conf_text)
+
+        # Update citation type
+        citation_type = result.get('citation_type', '')
+        if type_label:
+            type_label.config(text=citation_type)
 
         doi = result.get('doi', '')
         if doi:
