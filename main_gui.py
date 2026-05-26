@@ -147,6 +147,16 @@ class ThesisApp:
             doi_label.pack(side=tk.LEFT, padx=2)
             # Make DOI label clickable
             doi_label.bind("<Button-1>", lambda e, doi="": self._show_doi_popup(doi))
+            # Candidate toggle button
+            candidate_btn = ttk.Button(row, text="후보 보기", width=8)
+            candidate_btn.pack(side=tk.LEFT, padx=2)
+
+            # Store UI elements for later processing
+            fn['conf_label'] = conf_label
+            fn['doi_label'] = doi_label
+            fn['ref_widget'] = ref
+            fn['type_label'] = type_label
+            fn['matched_var'] = matched_var
 
             self.edited_rows.append({
                 'fn_id': fn['fn_id'],
@@ -156,14 +166,19 @@ class ThesisApp:
                 'matched_var': matched_var,
                 'conf_label': conf_label,
                 'doi_label': doi_label,
+                'candidate_btn': candidate_btn,
                 'index': i,
                 'fn_text': fn['fn_text']
             })
 
-            # Store UI elements for later processing
-            fn['conf_label'] = conf_label
-            fn['doi_label'] = doi_label
-            fn['ref_widget'] = ref
+            # Candidate display container (initially hidden)
+            candidate_frame = ttk.Frame(scrollable)
+            candidate_frame.columnconfigure(0, weight=1)
+            fn['candidate_frame'] = candidate_frame
+            fn['candidate_visible'] = False
+
+            # Configure candidate button to toggle candidate display
+            candidate_btn.configure(command=lambda f=fn: self._toggle_candidate_display(f))
 
         # Store references for later use
         self.editor_win = editor
@@ -203,34 +218,77 @@ class ThesisApp:
 
     def _update_auto_match_ui_threadsafe(self, fn_id, result, conf_label, doi_label, type_label=None):
         """Thread-safe update of UI with auto-match results"""
-        if conf_label is None or doi_label is None:
+        if conf_label is None or doi_label is None or result is None:
             return
 
-        conf_text = f"{result['confidence']*100:.0f}%"
-        conf_label.config(text=conf_text)
+        # Find the footnote object to access UI elements
+        fn_obj = None
+        for fn in self.footnotes:
+            if fn['fn_id'] == fn_id:
+                fn_obj = fn
+                break
 
-        # Update citation type
-        citation_type = result.get('citation_type', '')
-        if type_label:
-            type_label.config(text=citation_type)
+        if fn_obj is None:
+            return
 
-        doi = result.get('doi', '')
-        if doi:
-            doi_label.config(text=doi, foreground="blue", cursor="hand2")
-            # Store DOI for click handler
-            doi_label.doi = doi
-            doi_label.bind("<Button-1>", lambda e, d=doi: self._show_doi_popup(d))
+        # Handle both MatchResult objects and legacy dicts for backward compatibility
+        if hasattr(result, 'best_match') and result.best_match is not None:
+            # New MatchResult structure
+            conf_text = f"{result.best_match.confidence*100:.0f}%"
+            conf_label.config(text=conf_text)
+
+            # Update citation type
+            citation_type = result.best_match.citation_type
+            if type_label:
+                type_label.config(text=citation_type)
+
+            doi = result.best_match.doi
+            if doi:
+                doi_label.config(text=doi, foreground="blue", cursor="hand2")
+                # Store DOI for click handler
+                doi_label.doi = doi
+                doi_label.bind("<Button-1>", lambda e, d=doi: self._show_doi_popup(d))
+            else:
+                doi_label.config(text="", foreground="black")
+
+            # Auto-fill the reference if confidence is high enough
+            if result.best_match.confidence >= 0.7:  # Auto-fill for high confidence matches
+                # Find the corresponding row and update the reference widget
+                for er in self.edited_rows:
+                    if er['fn_id'] == fn_id:
+                        er['ref_widget'].delete("1.0", tk.END)
+                        er['ref_widget'].insert(tk.END, result.best_match.matched_ref)
+                        break
+
+            # Handle candidate display
+            self._update_candidate_display(fn_obj, result)
         else:
-            doi_label.config(text="", foreground="black")
+            # Legacy dict structure (backward compatibility)
+            conf_text = f"{result['confidence']*100:.0f}%"
+            conf_label.config(text=conf_text)
 
-        # Auto-fill the reference if confidence is high enough
-        if result['confidence'] >= 0.7:  # Auto-fill for high confidence matches
-            # Find the corresponding row and update the reference widget
-            for er in self.edited_rows:
-                if er['fn_id'] == fn_id:
-                    er['ref_widget'].delete("1.0", tk.END)
-                    er['ref_widget'].insert(tk.END, result['matched_ref'])
-                    break
+            # Update citation type
+            citation_type = result.get('citation_type', '')
+            if type_label:
+                type_label.config(text=citation_type)
+
+            doi = result.get('doi', '')
+            if doi:
+                doi_label.config(text=doi, foreground="blue", cursor="hand2")
+                # Store DOI for click handler
+                doi_label.doi = doi
+                doi_label.bind("<Button-1>", lambda e, d=doi: self._show_doi_popup(d))
+            else:
+                doi_label.config(text="", foreground="black")
+
+            # Auto-fill the reference if confidence is high enough
+            if result['confidence'] >= 0.7:  # Auto-fill for high confidence matches
+                # Find the corresponding row and update the reference widget
+                for er in self.edited_rows:
+                    if er['fn_id'] == fn_id:
+                        er['ref_widget'].delete("1.0", tk.END)
+                        er['ref_widget'].insert(tk.END, result['matched_ref'])
+                        break
 
     def _show_doi_popup(self, doi):
         """Show DOI in a popup window"""
@@ -528,6 +586,125 @@ class ThesisApp:
                     os.remove(processed_doc)
                 except:
                     pass
+
+    def _toggle_candidate_display(self, fn):
+        """Toggle the display of candidate matches for a footnote"""
+        if fn['candidate_visible']:
+            # Hide candidate frame
+            fn['candidate_frame'].pack_forget()
+            fn['candidate_visible'] = False
+            fn['candidate_btn'].configure(text="후보 보기")
+        else:
+            # Show candidate frame
+            fn['candidate_frame'].pack(fill=tk.X, padx=5, pady=2, after=fn['ref_widget'].master)
+            fn['candidate_visible'] = True
+            fn['candidate_btn'].configure(text="후보 숨기기")
+
+    def _update_candidate_display(self, fn, result):
+        """Update the candidate display for a footnote"""
+        # Clear previous candidates
+        for widget in fn['candidate_frame'].winfo_children():
+            widget.destroy()
+
+        # Handle both MatchResult objects and legacy dicts for backward compatibility
+        if hasattr(result, 'best_match') and result.best_match is not None:
+            # New MatchResult structure
+            candidates = result.candidates
+            # Don't show candidates for REPEATED citations (they're auto-resolved)
+            if result.best_match.citation_type == "REPEATED":
+                return
+        else:
+            # Legacy dict structure (backward compatibility) - no candidate support
+            return
+
+        if not candidates:
+            return
+
+        # Add candidate header
+        header_label = ttk.Label(fn['candidate_frame'], text="추천 候補:", font=("Arial", 9, "bold"))
+        header_label.grid(row=0, column=0, sticky="w", pady=(5, 2))
+
+        # Add each candidate
+        for i, candidate in enumerate(candidates):
+            candidate_frame = ttk.Frame(fn['candidate_frame'])
+            candidate_frame.grid(row=i+1, column=0, sticky="ew", pady=1)
+            candidate_frame.columnconfigure(1, weight=1)
+
+            # Radio button to select candidate
+            var = tk.BooleanVar(value=(candidate == result.best_match))
+            rb = ttk.Radiobutton(candidate_frame, variable=var, value=True,
+                               command=lambda c=candidate, f=fn, v=var: self._select_candidate(c, f, v))
+            rb.grid(row=0, column=0, padx=(0, 5))
+
+            # Candidate info
+            info_text = f"{candidate.preview} "
+            info_text += f"(신뢰도: {candidate.confidence*100:.0f}%, 출처: {candidate.source}"
+            if candidate.doi:
+                info_text += f", DOI: {candidate.doi}"
+            info_text += ")"
+
+            info_label = ttk.Label(candidate_frame, text=info_text, foreground="blue", cursor="hand2")
+            info_label.grid(row=0, column=1, sticky="w")
+            info_label.bind("<Button-1>", lambda e, c=candidate: self._show_candidate_details(c))
+
+    def _select_candidate(self, candidate, fn, var):
+        """Handle candidate selection"""
+        if var.get():
+            # Update the matched reference with the selected candidate
+            fn['ref_widget'].delete("1.0", tk.END)
+            fn['ref_widget'].insert(tk.END, candidate.matched_ref)
+
+            # Update the auto_match_results to reflect the selection
+            fn_id = fn['fn_id']
+            if fn_id in self.auto_match_results:
+                # Create a new MatchResult with the selected candidate as best_match
+                old_result = self.auto_match_results[fn_id]
+                if hasattr(old_result, 'best_match'):
+                    # New MatchResult structure
+                    new_candidates = [c if c == candidate else c for c in old_result.candidates]
+                    # Ensure the selected candidate is first
+                    new_candidates.remove(candidate)
+                    new_candidates.insert(0, candidate)
+
+                    new_result = MatchResult(
+                        best_match=candidate,
+                        candidates=new_candidates,
+                        requires_user_selection=False  # User selected it, so no need for further selection
+                    )
+                    self.auto_match_results[fn_id] = new_result
+                else:
+                    # Legacy dict structure
+                    self.auto_match_results[fn_id] = {
+                        'matched_ref': candidate.matched_ref,
+                        'confidence': candidate.confidence,
+                        'source': candidate.source,
+                        'citation_type': candidate.citation_type,
+                        'doi': candidate.doi
+                    }
+
+    def _show_candidate_details(self, candidate):
+        """Show detailed information about a candidate"""
+        popup = tk.Toplevel(self.editor_win)
+        popup.title("후보 세부 정보")
+        popup.geometry("400x200")
+
+        text = tk.Text(popup, wrap=tk.WORD, padx=10, pady=10)
+        text.pack(fill=tk.BOTH, expand=True)
+
+        details = f"매칭 참고문헌:\n{candidate.matched_ref}\n\n"
+        details += f"후보 ID: {candidate.candidate_id}\n"
+        details += f"신뢰도: {candidate.confidence*100:.1f}%\n"
+        details += f"출처: {candidate.source}\n"
+        details += f"인용 유형: {candidate.citation_type}\n"
+        if candidate.doi:
+            details += f"DOI: {candidate.doi}\n"
+        if candidate.preview:
+            details += f"미리보기: {candidate.preview}\n"
+
+        text.insert(tk.END, details)
+        text.config(state=tk.DISABLED)
+
+        ttk.Button(popup, text="닫기", command=popup.destroy).pack(pady=5)
 
 
 if __name__ == "__main__":

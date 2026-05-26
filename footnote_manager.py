@@ -21,6 +21,9 @@ from datetime import datetime
 from functools import lru_cache
 import logging
 import unicodedata
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+import hashlib
 
 # -------------------------
 # 로깅 설정
@@ -49,6 +52,22 @@ def normalize_key(author="", title=""):
     text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+@dataclass
+class MatchCandidate:
+    candidate_id: str
+    matched_ref: str
+    confidence: float
+    source: str
+    citation_type: str
+    doi: Optional[str] = None
+    preview: str = ""
+
+@dataclass
+class MatchResult:
+    best_match: Optional[MatchCandidate] = None
+    candidates: List[MatchCandidate] = field(default_factory=list)
+    requires_user_selection: bool = False
 
 FULL_INDICATORS = [
     "doi",
@@ -163,6 +182,66 @@ def format_reference_from_crossref(crossref_item):
         parts.append(year_str)
 
     return ". ".join([p for p in parts if p])
+
+def _generate_candidate_id(text: str) -> str:
+    """Generate deterministic candidate ID from normalized text"""
+    normalized = re.sub(r"[^\w\s]", "", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+def _create_preview(text: str, length: int = 50) -> str:
+    """Create a preview string for display"""
+    if not text:
+        return ""
+    if len(text) <= length:
+        return text
+    return text[:length] + "..."
+
+def _calculate_similarity_score(parsed_ref: Dict[str, str], candidate_ref: str, source: str) -> float:
+    """
+    Calculate similarity score between parsed reference and candidate reference
+    Based on title, author, and year similarity with source bonus
+    Returns score between 0.0 and 1.0
+    """
+    if not parsed_ref or not candidate_ref:
+        return 0.0
+
+    # Extract components from parsed reference
+    parsed_title = parsed_ref.get("title", "").lower()
+    parsed_author = parsed_ref.get("author", "").lower()
+    parsed_year = parsed_ref.get("year", "")
+
+    # Extract components from candidate reference (simplified parsing)
+    candidate_lower = candidate_ref.lower()
+
+    # Title similarity
+    title_sim = 0.0
+    if parsed_title:
+        # Use sequence similarity for better matching
+        title_sim = difflib.SequenceMatcher(None, parsed_title, candidate_lower).ratio()
+
+    # Author similarity
+    author_sim = 0.0
+    if parsed_author:
+        # Use sequence similarity for better matching
+        author_sim = difflib.SequenceMatcher(None, parsed_author, candidate_lower).ratio()
+
+    # Year match
+    year_match = 0.0
+    if parsed_year and parsed_year.isdigit():
+        if parsed_year in candidate_ref:
+            year_match = 1.0
+
+    # Weighted combination
+    score = (0.4 * title_sim) + (0.4 * author_sim) + (0.2 * year_match)
+
+    # Apply source bonus
+    if source == "memory":
+        score = min(1.0, score + 0.05)  # Memory matches get slight bonus
+    # Crossref matches get no bonus (base score)
+
+    # Ensure score is in [0, 1] range
+    return max(0.0, min(1.0, score))
 
 # Namespaces used in Word XML
 NS = {
@@ -557,15 +636,8 @@ def auto_match_reference(fn_text, fn_id=None):
     각주 텍스트를 분석하여 참고문헌을 매칭합니다.
     먼저 citation memory에서 반복 citation 여부를 확인하고,
     없으면 Crossref를 통해 메타데이터를 enrichment합니다.
-    성공 시 다음과 같은 딕셔너리를 반환합니다:
-        {
-            "matched_ref": "...",  # 매칭된 참고문헌 문자열
-            "doi": "...",          # DOI (있는 경우)
-            "confidence": 0.92,    # 신뢰도 점수
-            "source": "memory" 또는 "crossref",
-            "citation_type": "FULL", "REPEATED", 또는 "SHORT",
-            "fn_id": original full citation's fn_id (for REPEATED)
-        }
+    성공 시 다음과 같은 MatchResult를 반환합니다:
+        MatchResult에 best_match와 candidates가 포함됨
     실패 시 None을 반환합니다.
     """
     if not fn_text or not isinstance(fn_text, str):
@@ -587,14 +659,22 @@ def auto_match_reference(fn_text, fn_id=None):
             if key in citation_memory:
                 memory = citation_memory[key]
                 memory["repeat_count"] += 1
-                return {
-                    "citation_type": "REPEATED",
-                    "matched_ref": memory["full_reference"],
-                    "confidence": 0.95,
-                    "source": "memory",
-                    "fn_id": memory.get("first_seen_fn_id"),
-                    "repeat_count": memory["repeat_count"]
-                }
+                candidate_id = _generate_candidate_id(memory["full_reference"])
+                preview = _create_preview(memory["full_reference"])
+                candidate = MatchCandidate(
+                    candidate_id=candidate_id,
+                    matched_ref=memory["full_reference"],
+                    confidence=0.95,
+                    source="memory",
+                    citation_type="REPEATED",
+                    doi="",  # REPEATED citations don't have DOI directly
+                    preview=preview
+                )
+                return MatchResult(
+                    best_match=candidate,
+                    candidates=[candidate],
+                    requires_user_selection=False  # REPEATED citations are auto-resolved
+                )
             # 메모리에 없는 short citation은 처리 불가
             return None
 
@@ -611,7 +691,27 @@ def auto_match_reference(fn_text, fn_id=None):
                     "repeat_count": 0,
                     "crossref": None  # 나중에 enrichment
                 }
-            # 메모리에 있는 경우 enrichment 시도 (없으면 무시)
+
+            # Generate candidates for FULL citation
+            candidates = []
+
+            # Candidate 1: Memory-only match (original reference)
+            memory_ref = citation_memory[key]["full_reference"]
+            memory_candidate_id = _generate_candidate_id(memory_ref)
+            memory_preview = _create_preview(memory_ref)
+            memory_score = _calculate_similarity_score(parsed, memory_ref, "memory")
+            memory_candidate = MatchCandidate(
+                candidate_id=memory_candidate_id,
+                matched_ref=memory_ref,
+                confidence=memory_score,
+                source="memory",
+                citation_type="FULL",
+                doi="",
+                preview=memory_preview
+            )
+            candidates.append(memory_candidate)
+
+            # Candidate 2: Crossref-enriched match (if available)
             current = citation_memory[key]
             if current["crossref"] is None:
                 # Crossref 쿼리 (title + author + year로 구성)
@@ -621,28 +721,41 @@ def auto_match_reference(fn_text, fn_id=None):
                     if crossref_item:
                         current["crossref"] = crossref_item
 
-            # 매칭된 참고문헌 문자열 생성
             if current["crossref"]:
                 # Crossref 데이터가 있으면それを使ってフォーマット
-                matched_ref = format_reference_from_crossref(current["crossref"])
+                crossref_ref = format_reference_from_crossref(current["crossref"])
                 doi = current["crossref"].get("DOI", "")
-                confidence = 0.9  # Crossref enrichment 신뢰도
-                source = "crossref"
-            else:
-                # Crossref 데이터がない場合は、元のフル参照を使用
-                matched_ref = fn_text
-                doi = ""
-                confidence = 0.85  # 메모리만 있는 경우 약간 낮은 신뢰도
-                source = "memory"
+                crossref_score = _calculate_similarity_score(parsed, crossref_ref, "crossref")
+                crossref_candidate_id = _generate_candidate_id(crossref_ref)
+                crossref_preview = _create_preview(crossref_ref)
+                crossref_candidate = MatchCandidate(
+                    candidate_id=crossref_candidate_id,
+                    matched_ref=crossref_ref,
+                    confidence=crossref_score,
+                    source="crossref",
+                    citation_type="FULL",
+                    doi=doi,
+                    preview=crossref_preview
+                )
+                candidates.append(crossref_candidate)
 
-            return {
-                "citation_type": "FULL",
-                "matched_ref": matched_ref,
-                "confidence": confidence,
-                "source": source,
-                "doi": doi,
-                "fn_id": fn_id
-            }
+            # If we have candidates, score and rank them
+            if candidates:
+                # Sort by confidence descending
+                candidates.sort(key=lambda x: x.confidence, reverse=True)
+
+                # Determine if user selection is required (based on confidence threshold)
+                # For now, we'll keep the existing logic: auto-select if confidence >= 0.7
+                requires_selection = candidates[0].confidence < 0.7
+
+                return MatchResult(
+                    best_match=candidates[0],
+                    candidates=candidates,
+                    requires_user_selection=requires_selection
+                )
+            else:
+                # Fallback - shouldn't happen, but just in case
+                return None
 
         # 4. weder full nor short - 처리 불가
         return None
