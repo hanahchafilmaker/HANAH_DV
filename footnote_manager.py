@@ -63,11 +63,31 @@ class MatchCandidate:
     doi: Optional[str] = None
     preview: str = ""
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert MatchCandidate to dictionary for serialization"""
+        return {
+            'candidate_id': self.candidate_id,
+            'matched_ref': self.matched_ref,
+            'confidence': self.confidence,
+            'source': self.source,
+            'citation_type': self.citation_type,
+            'doi': self.doi,
+            'preview': self.preview
+        }
+
 @dataclass
 class MatchResult:
     best_match: Optional[MatchCandidate] = None
     candidates: List[MatchCandidate] = field(default_factory=list)
     requires_user_selection: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert MatchResult to dictionary for serialization"""
+        return {
+            'best_match': self.best_match.to_dict() if self.best_match else None,
+            'candidates': [candidate.to_dict() for candidate in self.candidates],
+            'requires_user_selection': self.requires_user_selection
+        }
 
 FULL_INDICATORS = [
     "doi",
@@ -196,6 +216,43 @@ def _create_preview(text: str, length: int = 50) -> str:
     if len(text) <= length:
         return text
     return text[:length] + "..."
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """Normalize a reference string for deduplication"""
+    if not text:
+        return ""
+    # Convert to lowercase
+    text = text.lower()
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Remove common punctuation that doesn't affect meaning
+    text = re.sub(r'[.,:;]+$', '', text)  # Remove trailing punctuation
+    text = text.strip()
+    return text
+
+
+def _deduplicate_candidates(candidates: List[MatchCandidate]) -> List[MatchCandidate]:
+    """Remove duplicate candidates based on normalized reference text"""
+    if not candidates:
+        return candidates
+
+    seen = set()
+    unique_candidates = []
+
+    for candidate in candidates:
+        # Create a deduplication key based on normalized matched_ref
+        norm_ref = _normalize_for_dedup(candidate.matched_ref)
+        # Also consider DOI if available for more accurate deduplication
+        dedup_key = norm_ref
+        if candidate.doi:
+            dedup_key = f"{norm_ref}|{candidate.doi.lower()}"
+
+        if dedup_key not in seen:
+            seen.add(dedup_key)
+            unique_candidates.append(candidate)
+
+    return unique_candidates
 
 def _calculate_similarity_score(parsed_ref: Dict[str, str], candidate_ref: str, source: str) -> float:
     """
@@ -739,8 +796,11 @@ def auto_match_reference(fn_text, fn_id=None):
                 )
                 candidates.append(crossref_candidate)
 
-            # If we have candidates, score and rank them
+            # If we have candidates, deduplicate, score and rank them
             if candidates:
+                # Deduplicate candidates
+                candidates = _deduplicate_candidates(candidates)
+
                 # Sort by confidence descending
                 candidates.sort(key=lambda x: x.confidence, reverse=True)
 
