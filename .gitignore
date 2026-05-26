@@ -1,11 +1,39 @@
 ﻿# Python
 __pycache__/
 *.py[cod]
+*$py.class
 
-# PyInstaller
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build outputs
 build/
 dist/
+
+# PyInstaller
 *.spec
 
 # VSCode
 .vscode/
+
+# Logs
+*.log
+
+# Cache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+temp/
+tmp/
+
+# Python packaging
+*.egg-info/
+
+# dotenv
+.env

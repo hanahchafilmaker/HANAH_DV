@@ -682,6 +682,27 @@ class ThesisApp:
                         'doi': candidate.doi
                     }
 
+                # Update all related UI elements to reflect the selection
+                self._update_ui_after_candidate_selection(fn, candidate)
+
+    def _update_ui_after_candidate_selection(self, fn, candidate):
+        """Update UI elements after candidate selection"""
+        # Update confidence label
+        conf_text = f"{candidate.confidence*100:.0f}%"
+        fn['conf_label'].config(text=conf_text)
+
+        # Update citation type label
+        fn['type_label'].config(text=candidate.citation_type)
+
+        # Update DOI label
+        if candidate.doi:
+            fn['doi_label'].config(text=candidate.doi, foreground="blue", cursor="hand2")
+            # Store DOI for click handler
+            fn['doi_label'].doi = candidate.doi
+            fn['doi_label'].bind("<Button-1>", lambda e, d=candidate.doi: self._show_doi_popup(d))
+        else:
+            fn['doi_label'].config(text="", foreground="black")
+
     def _show_candidate_details(self, candidate):
         """Show detailed information about a candidate"""
         popup = tk.Toplevel(self.editor_win)
