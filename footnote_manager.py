@@ -35,6 +35,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Citation memory for tracking repeated citations
+citation_memory = {}
+
+def reset_citation_memory():
+    """Reset citation memory - call when processing a new document"""
+    global citation_memory
+    citation_memory = {}
+
+def normalize_key(author="", title=""):
+    """Create a normalized key for citation matching"""
+    text = f"{author} {title}".lower()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+FULL_INDICATORS = [
+    "doi",
+    "http",
+    "www.",
+    "press",
+    "publisher",
+    "translated by",
+    "edited by",
+    "vol.",
+    "no.",
+    "pp.",
+    "isbn",
+    "issn",
+]
+
+def looks_like_full_citation(text):
+    """Detect if a citation looks like a full citation"""
+    if not text or not isinstance(text, str):
+        return False
+    text = text.lower()
+
+    # Year presence gives points
+    year_score = 1 if re.search(r"\b(19|20)\d{2}\b", text) else 0
+
+    # Count indicators
+    indicator_score = sum(1 for x in FULL_INDICATORS if x in text)
+
+    # If at least 2 points (year + indicator or two indicators), consider full
+    return (indicator_score + year_score) >= 2
+
+def looks_like_short_citation(text):
+    """Detect if a citation looks like a short citation (e.g., author, title, page)"""
+    if not text or not isinstance(text, str):
+        return False
+    # If it looks like a full citation, it's not short
+    if looks_like_full_citation(text):
+        return False
+    # Short citations often end with a page number
+    return bool(re.search(r",\s*(p\.\s*)?\d+\s*\.?$", text))
+
 # Namespaces used in Word XML
 NS = {
     'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
