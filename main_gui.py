@@ -21,12 +21,13 @@ class ThesisApp:
         self.root.geometry("800x600")
 
         self.docx_path = None
-        self.footnotes = []  # list of dict from extract_footnotes
+        self.footnotes = []  # list of dict from extract_footnotes (pure data, no widgets)
         self.edited_rows = []  # parallel list of widgets/vars for editing UI
         self.auto_match_results = {}  # Store auto-match results by fn_id
         self.ui_alive = False  # Track if footnote editor window is alive
         self._after_ids = []  # Track after() callback IDs for cleanup
         self.ui_queue = queue.Queue()  # Queue for thread-safe UI updates
+        self.ui_registry = {}  # Registry for UI widgets by fn_id (UI thread only)
 
         # Queue-based dispatcher for thread-safe UI updates
         self.ui_queue = queue.Queue()
@@ -164,12 +165,16 @@ class ThesisApp:
             candidate_btn = ttk.Button(row, text="후보 보기", width=8)
             candidate_btn.pack(side=tk.LEFT, padx=2)
 
-            # Store UI elements for later processing
-            fn['conf_label'] = conf_label
-            fn['doi_label'] = doi_label
-            fn['ref_widget'] = ref
-            fn['type_label'] = type_label
-            fn['matched_var'] = matched_var
+            # Store UI elements in the registry (UI thread only)
+            self.ui_registry[fn['fn_id']] = {
+                'conf_label': conf_label,
+                'doi_label': doi_label,
+                'type_label': type_label,
+                'ref_widget': ref,
+                'matched_var': matched_var,
+                'candidate_frame': candidate_frame,
+                'candidate_btn': candidate_btn
+            }
 
             self.edited_rows.append({
                 'fn_id': fn['fn_id'],
@@ -177,21 +182,19 @@ class ThesisApp:
                 'ref_widget': ref,
                 'type_label': type_label,
                 'matched_var': matched_var,
-                'conf_label': conf_label,
-                'doi_label': doi_label,
                 'candidate_btn': candidate_btn,
                 'index': i,
                 'fn_text': fn['fn_text']
             })
 
-            # Candidate display container (initially hidden)
+            # Candidate display container (initially hidden) - stored in ui_registry only
             candidate_frame = ttk.Frame(scrollable)
             candidate_frame.columnconfigure(0, weight=1)
-            fn['candidate_frame'] = candidate_frame
+            # Initialize candidate visibility in footnote data
             fn['candidate_visible'] = False
 
             # Configure candidate button to toggle candidate display
-            candidate_btn.configure(command=lambda f=fn: self._toggle_candidate_display(f))
+            candidate_btn.configure(command=lambda f_id=fn['fn_id']: self._toggle_candidate_display(f_id))
 
         # Store references for later use
         self.editor_win = editor
@@ -226,7 +229,7 @@ class ThesisApp:
 
                 if result:
                     self.auto_match_results[fn_id] = result
-                    # Queue UI update for main thread
+                    # Queue UI update for main thread - ONLY data, NO widget references
                     self.ui_queue.put({
                         "type": "auto_match_result",
                         "footnote_id": fn_id,
@@ -236,22 +239,36 @@ class ThesisApp:
         except Exception as e:
             print(f"Error in _process_all_footnotes_matching: {e}")
 
-    def _update_auto_match_ui_threadsafe(self, fn_id, result, conf_label, doi_label, type_label=None):
+    def _update_auto_match_ui_threadsafe(self, fn_id, result):
         """Thread-safe update of UI with auto-match results"""
         # Check if UI is still alive
         if not self.ui_alive:
             return
-        if conf_label is None or doi_label is None or result is None:
+        if result is None:
             return
 
-        # Find the footnote object to access UI elements
-        fn_obj = None
-        for fn in self.footnotes:
-            if fn['fn_id'] == fn_id:
-                fn_obj = fn
-                break
+        # Get UI elements from registry (UI thread only)
+        ui_elements = self.ui_registry.get(fn_id)
+        if not ui_elements:
+            return
 
-        if fn_obj is None:
+        conf_label = ui_elements.get('conf_label')
+        doi_label = ui_elements.get('doi_label')
+        type_label = ui_elements.get('type_label')
+        ref_widget = ui_elements.get('ref_widget')
+
+        # Check if widgets still exist
+        try:
+            if not conf_label.winfo_exists():
+                return
+            if not doi_label.winfo_exists():
+                return
+            if type_label is not None and not type_label.winfo_exists():
+                return
+            if not ref_widget.winfo_exists():
+                return
+        except tk.TclError:
+            # Widget has been destroyed
             return
 
         # Handle both MatchResult objects and legacy dicts for backward compatibility
@@ -275,15 +292,11 @@ class ThesisApp:
                 doi_label.config(text="", foreground="black")
 
             # Always apply the best match first (auto-fill)
-            # Find the corresponding row and update the reference widget
-            for er in self.edited_rows:
-                if er['fn_id'] == fn_id:
-                    er['ref_widget'].delete("1.0", tk.END)
-                    er['ref_widget'].insert(tk.END, result.best_match.matched_ref)
-                    break
+            ref_widget.delete("1.0", tk.END)
+            ref_widget.insert(tk.END, result.best_match.matched_ref)
 
             # Handle candidate display (always show candidates for FULL citations)
-            self._update_candidate_display(fn_obj, result)
+            self._update_candidate_display(fn_id, result)
         else:
             # Legacy dict structure (backward compatibility)
             conf_text = f"{result['confidence']*100:.0f}%"
@@ -304,12 +317,8 @@ class ThesisApp:
                 doi_label.config(text="", foreground="black")
 
             # Always apply the best match first (auto-fill)
-            # Find the corresponding row and update the reference widget
-            for er in self.edited_rows:
-                if er['fn_id'] == fn_id:
-                    er['ref_widget'].delete("1.0", tk.END)
-                    er['ref_widget'].insert(tk.END, result['matched_ref'])
-                    break
+            ref_widget.delete("1.0", tk.END)
+            ref_widget.insert(tk.END, result['matched_ref'])
 
     def _show_doi_popup(self, doi):
         """Show DOI in a popup window"""
@@ -608,58 +617,127 @@ class ThesisApp:
                 except:
                     pass
 
-    def _toggle_candidate_display(self, fn):
+    def _toggle_candidate_display(self, fn_id):
         """Toggle the display of candidate matches for a footnote"""
-        if fn['candidate_visible']:
-            # Hide candidate frame
-            fn['candidate_frame'].pack_forget()
-            fn['candidate_visible'] = False
-            fn['candidate_btn'].configure(text="후보 보기")
-        else:
-            # Show candidate frame
-            fn['candidate_frame'].pack(fill=tk.X, padx=5, pady=2, after=fn['ref_widget'].master)
-            fn['candidate_visible'] = True
-            fn['candidate_btn'].configure(text="후보 숨기기")
+        # Check if UI is still alive
+        if not self.ui_alive:
+            return
 
-    def _apply_match(self, fn_id, match):
-        """Apply a match to a footnote (used for auto-filling)"""
-        # Find the footnote object
+        # Get UI elements from registry (UI thread only)
+        ui_elements = self.ui_registry.get(fn_id)
+        if not ui_elements:
+            return
+
+        candidate_frame = ui_elements.get('candidate_frame')
+        candidate_btn = ui_elements.get('candidate_btn')
+
+        # Check if widgets still exist
+        try:
+            if not candidate_frame.winfo_exists():
+                return
+            if not candidate_btn.winfo_exists():
+                return
+        except tk.TclError:
+            # Widget has been destroyed
+            return
+
+        # Get visibility state from footnote data
         fn_obj = None
         for fn in self.footnotes:
             if fn['fn_id'] == fn_id:
                 fn_obj = fn
                 break
 
-        if fn_obj is None:
+        if not fn_obj:
+            return
+
+        if fn_obj['candidate_visible']:
+            # Hide candidate frame
+            candidate_frame.pack_forget()
+            fn_obj['candidate_visible'] = False
+            candidate_btn.configure(text="후보 보기")
+        else:
+            # Show candidate frame
+            candidate_frame.pack(fill=tk.X, padx=5, pady=2, after=ui_elements['ref_widget'].master)
+            fn_obj['candidate_visible'] = True
+            candidate_btn.configure(text="후보 숨기기")
+
+    def _apply_match(self, fn_id, match):
+        """Apply a match to a footnote (used for auto-filling)"""
+        # Check if UI is still alive
+        if not self.ui_alive:
+            return
+
+        # Get UI elements from registry (UI thread only)
+        ui_elements = self.ui_registry.get(fn_id)
+        if not ui_elements:
+            return
+
+        ref_widget = ui_elements.get('ref_widget')
+        conf_label = ui_elements.get('conf_label')
+        type_label = ui_elements.get('type_label')
+        doi_label = ui_elements.get('doi_label')
+
+        # Check if widgets still exist
+        try:
+            if not ref_widget.winfo_exists():
+                return
+            if not conf_label.winfo_exists():
+                return
+            if not type_label.winfo_exists():
+                return
+            if not doi_label.winfo_exists():
+                return
+        except tk.TclError:
+            # Widget has been destroyed
             return
 
         # Update the matched reference in the UI
-        for er in self.edited_rows:
-            if er['fn_id'] == fn_id:
-                er['ref_widget'].delete("1.0", tk.END)
-                er['ref_widget'].insert(tk.END, match.matched_ref)
-                break
+        ref_widget.delete("1.0", tk.END)
+        ref_widget.insert(tk.END, match.matched_ref)
 
         # Update confidence label
         conf_text = f"{match.confidence*100:.0f}%"
-        fn_obj['conf_label'].config(text=conf_text)
+        conf_label.config(text=conf_text)
 
         # Update citation type label
-        fn_obj['type_label'].config(text=match.citation_type)
+        type_label.config(text=match.citation_type)
 
         # Update DOI label
         if match.doi:
-            fn_obj['doi_label'].config(text=match.doi, foreground="blue", cursor="hand2")
+            doi_label.config(text=match.doi, foreground="blue", cursor="hand2")
             # Store DOI for click handler
-            fn_obj['doi_label'].doi = match.doi
-            fn_obj['doi_label'].bind("<Button-1>", lambda e, d=match.doi: self._show_doi_popup(d))
+            doi_label.doi = match.doi
+            doi_label.bind("<Button-1>", lambda e, d=match.doi: self._show_doi_popup(d))
         else:
-            fn_obj['doi_label'].config(text="", foreground="black")
+            doi_label.config(text="", foreground="black")
 
-    def _update_candidate_display(self, fn, result):
+    def _update_candidate_display(self, fn_id, result):
         """Update the candidate display for a footnote"""
+        # Check if UI is still alive
+        if not self.ui_alive:
+            return
+
+        # Get UI elements from registry (UI thread only)
+        ui_elements = self.ui_registry.get(fn_id)
+        if not ui_elements:
+            return
+
+        candidate_frame = ui_elements.get('candidate_frame')
+        candidate_btn = ui_elements.get('candidate_btn')
+
+        # Check if widgets still exist
+        try:
+            if not candidate_frame.winfo_exists():
+                return
+            if not candidate_btn.winfo_exists():
+                return
+        except tk.TclError:
+            # Widget has been destroyed
+            return
+
         # Clear previous candidates
-        for widget in fn['candidate_frame'].winfo_children():
+        for widget in candidate_frame.winfo_children():
             widget.destroy()
 
         # Handle both MatchResult objects and legacy dicts for backward compatibility
@@ -677,19 +755,19 @@ class ThesisApp:
             return
 
         # Add candidate header
-        header_label = ttk.Label(fn['candidate_frame'], text="추천 候補:", font=("Arial", 9, "bold"))
+        header_label = ttk.Label(candidate_frame, text="추천 候補:", font=("Arial", 9, "bold"))
         header_label.grid(row=0, column=0, sticky="w", pady=(5, 2))
 
         # Add each candidate
         for i, candidate in enumerate(candidates):
-            candidate_frame = ttk.Frame(fn['candidate_frame'])
-            candidate_frame.grid(row=i+1, column=0, sticky="ew", pady=1)
-            candidate_frame.columnconfigure(1, weight=1)
+            candidate_frame_inner = ttk.Frame(candidate_frame)
+            candidate_frame_inner.grid(row=i+1, column=0, sticky="ew", pady=1)
+            candidate_frame_inner.columnconfigure(1, weight=1)
 
             # Radio button to select candidate
             var = tk.BooleanVar(value=(candidate == result.best_match))
-            rb = ttk.Radiobutton(candidate_frame, variable=var, value=True,
-                               command=lambda c=candidate, f=fn, v=var: self._select_candidate(c, f, v))
+            rb = ttk.Radiobutton(candidate_frame_inner, variable=var, value=True,
+                               command=lambda c=candidate, f_id=fn_id, v=var: self._select_candidate(c, f_id, v))
             rb.grid(row=0, column=0, padx=(0, 5))
 
             # Candidate info
@@ -699,19 +777,36 @@ class ThesisApp:
                 info_text += f", DOI: {candidate.doi}"
             info_text += ")"
 
-            info_label = ttk.Label(candidate_frame, text=info_text, foreground="blue", cursor="hand2")
+            info_label = ttk.Label(candidate_frame_inner, text=info_text, foreground="blue", cursor="hand2")
             info_label.grid(row=0, column=1, sticky="w")
             info_label.bind("<Button-1>", lambda e, c=candidate: self._show_candidate_details(c))
 
-    def _select_candidate(self, candidate, fn, var):
+    def _select_candidate(self, candidate, fn_id, var):
         """Handle candidate selection"""
+        if not self.ui_alive:
+            return
+
         if var.get():
+            # Get UI elements from registry (UI thread only)
+            ui_elements = self.ui_registry.get(fn_id)
+            if not ui_elements:
+                return
+
+            ref_widget = ui_elements.get('ref_widget')
+
+            # Check if widgets still exist
+            try:
+                if not ref_widget.winfo_exists():
+                    return
+            except tk.TclError:
+                # Widget has been destroyed
+                return
+
             # Update the matched reference with the selected candidate
-            fn['ref_widget'].delete("1.0", tk.END)
-            fn['ref_widget'].insert(tk.END, candidate.matched_ref)
+            ref_widget.delete("1.0", tk.END)
+            ref_widget.insert(tk.END, candidate.matched_ref)
 
             # Update the auto_match_results to reflect the selection
-            fn_id = fn['fn_id']
             if fn_id in self.auto_match_results:
                 # Create a new MatchResult with the selected candidate as best_match
                 old_result = self.auto_match_results[fn_id]
@@ -739,29 +834,63 @@ class ThesisApp:
                     }
 
                 # Update all related UI elements to reflect the selection
-                self._update_ui_after_candidate_selection(fn, candidate)
+                self._update_ui_after_candidate_selection(fn_id, candidate)
 
-    def _update_ui_after_candidate_selection(self, fn, candidate):
+    def _update_ui_after_candidate_selection(self, fn_id, candidate):
         """Update UI elements after candidate selection"""
+        # Check if UI is still alive
+        if not self.ui_alive:
+            return
+
+        # Get UI elements from registry (UI thread only)
+        ui_elements = self.ui_registry.get(fn_id)
+        if not ui_elements:
+            return
+
+        conf_label = ui_elements.get('conf_label')
+        type_label = ui_elements.get('type_label')
+        doi_label = ui_elements.get('doi_label')
+
+        # Check if widgets still exist
+        try:
+            if not conf_label.winfo_exists():
+                return
+            if not type_label.winfo_exists():
+                return
+            if not doi_label.winfo_exists():
+                return
+        except tk.TclError:
+            # Widget has been destroyed
+            return
+
         # Update confidence label
         conf_text = f"{candidate.confidence*100:.0f}%"
-        fn['conf_label'].config(text=conf_text)
+        conf_label.config(text=conf_text)
 
         # Update citation type label
-        fn['type_label'].config(text=candidate.citation_type)
+        type_label.config(text=candidate.citation_type)
 
         # Update DOI label
         if candidate.doi:
-            fn['doi_label'].config(text=candidate.doi, foreground="blue", cursor="hand2")
+            doi_label.config(text=candidate.doi, foreground="blue", cursor="hand2")
             # Store DOI for click handler
-            fn['doi_label'].doi = candidate.doi
-            fn['doi_label'].bind("<Button-1>", lambda e, d=candidate.doi: self._show_doi_popup(d))
+            doi_label.doi = candidate.doi
+            doi_label.bind("<Button-1>", lambda e, d=candidate.doi: self._show_doi_popup(d))
         else:
-            fn['doi_label'].config(text="", foreground="black")
+            doi_label.config(text="", foreground="black")
 
     def _on_editor_close(self):
         """Handle footnote editor window close"""
         self.ui_alive = False
+        # Cancel all pending after() callbacks
+        for after_id in self._after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass  # Already canceled or invalid
+        self._after_ids.clear()
+        # Clear UI registry to prevent accidental accesses
+        self.ui_registry.clear()
         if self.editor_win:
             self.editor_win.destroy()
 
@@ -801,8 +930,9 @@ class ThesisApp:
         except queue.Empty:
             pass
 
-        # Reschedule the loop
-        self.root.after(30, self._ui_dispatch_loop)
+        # Reschedule the loop and track the after ID for cleanup
+        after_id = self.root.after(30, self._ui_dispatch_loop)
+        self._after_ids.append(after_id)
 
     def _handle_ui_message(self, msg):
         """Route UI messages to appropriate handlers"""
@@ -819,7 +949,22 @@ class ThesisApp:
         if not self.ui_alive or not self.root.winfo_exists():
             return
 
-        self._update_auto_match_ui_threadsafe(footnote_id, result)
+        # Find the footnote object to get widget references
+        fn_obj = None
+        for fn in self.footnotes:
+            if fn['fn_id'] == footnote_id:
+                fn_obj = fn
+                break
+
+        if fn_obj is None:
+            return
+
+        # Get widget references from the footnote object
+        conf_label = fn_obj.get('conf_label')
+        doi_label = fn_obj.get('doi_label')
+        type_label = fn_obj.get('type_label')
+
+        self._update_auto_match_ui_threadsafe(footnote_id, result, conf_label, doi_label, type_label)
 
 
 if __name__ == "__main__":
