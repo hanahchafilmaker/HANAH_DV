@@ -89,6 +89,18 @@ class MatchResult:
             'requires_user_selection': self.requires_user_selection
         }
 
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get attribute from best_match for backward compatibility with dict-like access"""
+        if not self.best_match:
+            return default
+        return getattr(self.best_match, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        """Allow dict-like access to best_match attributes"""
+        if not self.best_match:
+            raise KeyError(key)
+        return getattr(self.best_match, key)
+
 FULL_INDICATORS = [
     "doi",
     "http",

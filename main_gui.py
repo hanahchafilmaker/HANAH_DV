@@ -209,9 +209,9 @@ class ThesisApp:
                     # Update UI in main thread
                     self.root.after(0, lambda fid=fn_id, res=result: self._update_auto_match_ui_threadsafe(
                         fid, res,
-                        self.footnotes[fid-1]['conf_label'] if fid-1 < len(self.footnotes) else None,
-                        self.footnotes[fid-1]['doi_label'] if fid-1 < len(self.footnotes) else None,
-                        self.footnotes[fid-1]['type_label'] if fid-1 < len(self.footnotes) else None))
+                        self.footnotes[int(fid)-1]['conf_label'] if int(fid)-1 < len(self.footnotes) else None,
+                        self.footnotes[int(fid)-1]['doi_label'] if int(fid)-1 < len(self.footnotes) else None,
+                        self.footnotes[int(fid)-1]['type_label'] if int(fid)-1 < len(self.footnotes) else None))
 
         except Exception as e:
             print(f"Error in _process_all_footnotes_matching: {e}")
