@@ -251,16 +251,15 @@ class ThesisApp:
             else:
                 doi_label.config(text="", foreground="black")
 
-            # Auto-fill the reference if confidence is high enough
-            if result.best_match.confidence >= 0.7:  # Auto-fill for high confidence matches
-                # Find the corresponding row and update the reference widget
-                for er in self.edited_rows:
-                    if er['fn_id'] == fn_id:
-                        er['ref_widget'].delete("1.0", tk.END)
-                        er['ref_widget'].insert(tk.END, result.best_match.matched_ref)
-                        break
+            # Always apply the best match first (auto-fill)
+            # Find the corresponding row and update the reference widget
+            for er in self.edited_rows:
+                if er['fn_id'] == fn_id:
+                    er['ref_widget'].delete("1.0", tk.END)
+                    er['ref_widget'].insert(tk.END, result.best_match.matched_ref)
+                    break
 
-            # Handle candidate display
+            # Handle candidate display (always show candidates for FULL citations)
             self._update_candidate_display(fn_obj, result)
         else:
             # Legacy dict structure (backward compatibility)
@@ -281,14 +280,13 @@ class ThesisApp:
             else:
                 doi_label.config(text="", foreground="black")
 
-            # Auto-fill the reference if confidence is high enough
-            if result['confidence'] >= 0.7:  # Auto-fill for high confidence matches
-                # Find the corresponding row and update the reference widget
-                for er in self.edited_rows:
-                    if er['fn_id'] == fn_id:
-                        er['ref_widget'].delete("1.0", tk.END)
-                        er['ref_widget'].insert(tk.END, result['matched_ref'])
-                        break
+            # Always apply the best match first (auto-fill)
+            # Find the corresponding row and update the reference widget
+            for er in self.edited_rows:
+                if er['fn_id'] == fn_id:
+                    er['ref_widget'].delete("1.0", tk.END)
+                    er['ref_widget'].insert(tk.END, result['matched_ref'])
+                    break
 
     def _show_doi_popup(self, doi):
         """Show DOI in a popup window"""
@@ -599,6 +597,41 @@ class ThesisApp:
             fn['candidate_frame'].pack(fill=tk.X, padx=5, pady=2, after=fn['ref_widget'].master)
             fn['candidate_visible'] = True
             fn['candidate_btn'].configure(text="후보 숨기기")
+
+    def _apply_match(self, fn_id, match):
+        """Apply a match to a footnote (used for auto-filling)"""
+        # Find the footnote object
+        fn_obj = None
+        for fn in self.footnotes:
+            if fn['fn_id'] == fn_id:
+                fn_obj = fn
+                break
+
+        if fn_obj is None:
+            return
+
+        # Update the matched reference in the UI
+        for er in self.edited_rows:
+            if er['fn_id'] == fn_id:
+                er['ref_widget'].delete("1.0", tk.END)
+                er['ref_widget'].insert(tk.END, match.matched_ref)
+                break
+
+        # Update confidence label
+        conf_text = f"{match.confidence*100:.0f}%"
+        fn_obj['conf_label'].config(text=conf_text)
+
+        # Update citation type label
+        fn_obj['type_label'].config(text=match.citation_type)
+
+        # Update DOI label
+        if match.doi:
+            fn_obj['doi_label'].config(text=match.doi, foreground="blue", cursor="hand2")
+            # Store DOI for click handler
+            fn_obj['doi_label'].doi = match.doi
+            fn_obj['doi_label'].bind("<Button-1>", lambda e, d=match.doi: self._show_doi_popup(d))
+        else:
+            fn_obj['doi_label'].config(text="", foreground="black")
 
     def _update_candidate_display(self, fn, result):
         """Update the candidate display for a footnote"""
