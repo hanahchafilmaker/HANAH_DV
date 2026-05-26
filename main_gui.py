@@ -11,6 +11,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import tempfile
 import csv
 import threading
+import queue
 
 
 class ThesisApp:
@@ -24,6 +25,12 @@ class ThesisApp:
         self.edited_rows = []  # parallel list of widgets/vars for editing UI
         self.auto_match_results = {}  # Store auto-match results by fn_id
         self.ui_alive = False  # Track if footnote editor window is alive
+        self._after_ids = []  # Track after() callback IDs for cleanup
+        self.ui_queue = queue.Queue()  # Queue for thread-safe UI updates
+
+        # Queue-based dispatcher for thread-safe UI updates
+        self.ui_queue = queue.Queue()
+        self.processing_job = False
 
         tk.Label(root, text="Word 문서 선택 (각주 추출 및 편집)", font=("Arial", 14)).pack(pady=10)
 
@@ -195,6 +202,9 @@ class ThesisApp:
         # Start a single thread to process all footnotes in order
         threading.Thread(target=self._process_all_footnotes_matching, daemon=True).start()
 
+        # Start UI dispatcher loop
+        self.root.after(30, self._ui_dispatch_loop)
+
 
     def _process_all_footnotes_matching(self):
         """Process all footnotes in order for citation matching"""
@@ -216,12 +226,12 @@ class ThesisApp:
 
                 if result:
                     self.auto_match_results[fn_id] = result
-                    # Update UI in main thread
-                    self.root.after(0, lambda fid=fn_id, res=result: self._update_auto_match_ui_threadsafe(
-                        fid, res,
-                        self.footnotes[int(fid)-1]['conf_label'] if int(fid)-1 < len(self.footnotes) else None,
-                        self.footnotes[int(fid)-1]['doi_label'] if int(fid)-1 < len(self.footnotes) else None,
-                        self.footnotes[int(fid)-1]['type_label'] if int(fid)-1 < len(self.footnotes) else None))
+                    # Queue UI update for main thread
+                    self.ui_queue.put({
+                        "type": "auto_match_result",
+                        "footnote_id": fn_id,
+                        "result": result
+                    })
 
         except Exception as e:
             print(f"Error in _process_all_footnotes_matching: {e}")
@@ -778,6 +788,38 @@ class ThesisApp:
         text.config(state=tk.DISABLED)
 
         ttk.Button(popup, text="닫기", command=popup.destroy).pack(pady=5)
+
+    def _ui_dispatch_loop(self):
+        """Process UI update messages from worker thread"""
+        if not self.ui_alive or not self.root.winfo_exists():
+            return
+
+        try:
+            while True:
+                msg = self.ui_queue.get_nowait()
+                self._handle_ui_message(msg)
+        except queue.Empty:
+            pass
+
+        # Reschedule the loop
+        self.root.after(30, self._ui_dispatch_loop)
+
+    def _handle_ui_message(self, msg):
+        """Route UI messages to appropriate handlers"""
+        msg_type = msg.get("type")
+
+        if msg_type == "auto_match_result":
+            self._apply_auto_match_result(
+                msg["footnote_id"],
+                msg["result"]
+            )
+
+    def _apply_auto_match_result(self, footnote_id, result):
+        """Apply auto-match result to UI (runs in main thread)"""
+        if not self.ui_alive or not self.root.winfo_exists():
+            return
+
+        self._update_auto_match_ui_threadsafe(footnote_id, result)
 
 
 if __name__ == "__main__":
