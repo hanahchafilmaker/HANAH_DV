@@ -4,6 +4,7 @@ import os
 import shutil
 import engine  # reuse style functions etc.
 import footnote_manager as fm
+from footnote_manager import MatchResult
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -22,6 +23,7 @@ class ThesisApp:
         self.footnotes = []  # list of dict from extract_footnotes
         self.edited_rows = []  # parallel list of widgets/vars for editing UI
         self.auto_match_results = {}  # Store auto-match results by fn_id
+        self.ui_alive = False  # Track if footnote editor window is alive
 
         tk.Label(root, text="Word 문서 선택 (각주 추출 및 편집)", font=("Arial", 14)).pack(pady=10)
 
@@ -69,6 +71,10 @@ class ThesisApp:
         editor.geometry("900x500")
         editor.transient(self.root)
         editor.grab_set()
+        # Track UI alive state
+        self.ui_alive = True
+        # Handle window close
+        editor.protocol("WM_DELETE_WINDOW", self._on_editor_close)
 
         toolbar = ttk.Frame(editor)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
@@ -198,6 +204,10 @@ class ThesisApp:
 
             # Process footnotes in order
             for fn in self.footnotes:
+                # Check if UI is still alive before processing
+                if not self.ui_alive:
+                    return
+
                 fn_text = fn['fn_text']
                 fn_id = fn['fn_id']
 
@@ -218,6 +228,9 @@ class ThesisApp:
 
     def _update_auto_match_ui_threadsafe(self, fn_id, result, conf_label, doi_label, type_label=None):
         """Thread-safe update of UI with auto-match results"""
+        # Check if UI is still alive
+        if not self.ui_alive:
+            return
         if conf_label is None or doi_label is None or result is None:
             return
 
@@ -735,6 +748,12 @@ class ThesisApp:
             fn['doi_label'].bind("<Button-1>", lambda e, d=candidate.doi: self._show_doi_popup(d))
         else:
             fn['doi_label'].config(text="", foreground="black")
+
+    def _on_editor_close(self):
+        """Handle footnote editor window close"""
+        self.ui_alive = False
+        if self.editor_win:
+            self.editor_win.destroy()
 
     def _show_candidate_details(self, candidate):
         """Show detailed information about a candidate"""
