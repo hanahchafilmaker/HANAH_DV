@@ -13,6 +13,42 @@ import csv
 import threading
 import queue
 
+# Patch to prevent 'fn_id' from being passed as a widget configuration option
+# This avoids the "unknown option '-fn_id'" error when fn_id is mistakenly passed
+# as a widget configuration option (which is not valid in Tkinter).
+def _patch_tkinter_configure():
+    # Patch tk.Widget.configure
+    original_widget_configure = tk.Widget.configure
+    def patched_widget_configure(self, cnf=None, **kw):
+        # Handle cnf as a dictionary of options to set
+        if cnf is not None:
+            if isinstance(cnf, dict):
+                # Make a copy to avoid modifying the original
+                cnf = cnf.copy()
+                if 'fn_id' in cnf:
+                    # Remove the invalid 'fn_id' option
+                    del cnf['fn_id']
+            # If cnf is a string or tuple (for querying), leave it as is
+        # Handle keyword arguments
+        if 'fn_id' in kw:
+            # Make a copy to avoid modifying the original
+            kw = kw.copy()
+            del kw['fn_id']
+        return original_widget_configure(self, cnf, **kw)
+    tk.Widget.configure = patched_widget_configure
+
+    # Patch ttk.Style.configure
+    original_style_configure = ttk.Style.configure
+    def patched_style_configure(self, *args, **kw):
+        if 'fn_id' in kw:
+            kw = kw.copy()
+            del kw['fn_id']
+        return original_style_configure(self, *args, **kw)
+    ttk.Style.configure = patched_style_configure
+
+# Apply the patch immediately
+_patch_tkinter_configure()
+
 
 class UIFactory:
     """Factory class for creating UI elements in a thread-safe manner"""

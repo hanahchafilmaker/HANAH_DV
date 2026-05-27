@@ -28,6 +28,10 @@ class Footnote:
     publisher: str = ""
     location: str = ""
 
+    def __getitem__(self, key):
+        """Allow dictionary-style access for backward compatibility"""
+        return getattr(self, key)
+
 @dataclass
 class MatchCandidate:
     """Represents a single candidate match for a footnote"""
@@ -68,66 +72,71 @@ def extract_footnotes(docx_path: str) -> List[Footnote]:
     Extract footnotes from a .docx file by parsing the XML directly.
     Returns a list of Footnote objects.
     """
-    footnotes_xml = _get_xml_from_docx(docx_path, 'word/footnotes.xml')
-    document_xml = _get_xml_from_docx(docx_path, 'word/document.xml')
-
-    if footnotes_xml is None:
-        # No footnotes part
-        return []
-
-    # Parse footnotes.xml
     try:
-        ft_root = ET.fromstring(footnotes_xml)
-    except ET.ParseError as e:
-        raise ValueError(f"Failed to parse footnotes.xml: {e}")
+        footnotes_xml = _get_xml_from_docx(docx_path, 'word/footnotes.xml')
+        document_xml = _get_xml_from_docx(docx_path, 'word/document.xml')
 
-    # Build mapping from footnote ID to its text
-    fn_elements = {}
-    for footnote in ft_root.findall('.//w:footnote', _get_namespaces()):
-        fid = footnote.get(f"{{{_get_namespaces()['w']}}}id")
-        if fid is None:
-            continue
-        # Collect all text inside the footnote
-        texts = []
-        for t in footnote.findall('.//w:t', _get_namespaces()):
-            if t.text:
-                texts.append(t.text)
-        fn_text = ''.join(texts).strip()
-        # Skip if empty or just a footnote number pattern like [1], [2], etc.
-        if not fn_text or re.match(r'^\[\d+\]$', fn_text):
-            continue
-        fn_elements[fid] = {
-            'fn_id': fid,
-            'fn_text': fn_text,
-            'fn_refs': []  # will fill from document.xml
-        }
+        if footnotes_xml is None:
+            # No footnotes part
+            return []
 
-    if document_xml is None:
-        # still return footnotes even if we can't find refs
-        return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in fn_elements.values()]
-
-    # Parse document.xml to find footnote references
-    try:
-        doc_root = ET.fromstring(document_xml)
-    except ET.ParseError as e:
-        # If we can't parse, just return footnotes without refs
-        return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in fn_elements.values()]
-
-    ns = _get_namespaces()
-    for ref in doc_root.findall('.//w:footnoteRef', ns):
-        fid = ref.get(f"{{{ns['w']}}}id")
-        if fid in fn_elements:
-            fn_elements[fid]['fn_refs'].append(fid)
-
-    # Convert to list of Footnote objects, sorted by fn_id as integer if possible
-    def try_int(s):
+        # Parse footnotes.xml
         try:
-            return int(s)
-        except ValueError:
-            return s
+            ft_root = ET.fromstring(footnotes_xml)
+        except ET.ParseError as e:
+            raise ValueError(f"Failed to parse footnotes.xml: {e}")
 
-    sorted_items = sorted(fn_elements.values(), key=lambda x: try_int(x['fn_id']))
-    return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in sorted_items]
+        # Build mapping from footnote ID to its text
+        fn_elements = {}
+        for footnote in ft_root.findall('.//w:footnote', _get_namespaces()):
+            fid = footnote.get(f"{{{_get_namespaces()['w']}}}id")
+            if fid is None:
+                continue
+            # Collect all text inside the footnote
+            texts = []
+            for t in footnote.findall('.//w:t', _get_namespaces()):
+                if t.text:
+                    texts.append(t.text)
+            fn_text = ''.join(texts).strip()
+            # Skip if empty or just a footnote number pattern like [1], [2], etc.
+            if not fn_text or re.match(r'^\[\d+\]$', fn_text):
+                continue
+            fn_elements[fid] = {
+                'fn_id': fid,
+                'fn_text': fn_text,
+                'fn_refs': []  # will fill from document.xml
+            }
+
+        if document_xml is None:
+            # still return footnotes even if we can't find refs
+            return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in fn_elements.values()]
+
+        # Parse document.xml to find footnote references
+        try:
+            doc_root = ET.fromstring(document_xml)
+        except ET.ParseError as e:
+            # If we can't parse, just return footnotes without refs
+            return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in fn_elements.values()]
+
+        ns = _get_namespaces()
+        for ref in doc_root.findall('.//w:footnoteRef', ns):
+            fid = ref.get(f"{{{ns['w']}}}id")
+            if fid in fn_elements:
+                fn_elements[fid]['fn_refs'].append(fid)
+
+        # Convert to list of Footnote objects, sorted by fn_id as integer if possible
+        def try_int(s):
+            try:
+                return int(s)
+            except ValueError:
+                return s
+
+        sorted_items = sorted(fn_elements.values(), key=lambda x: try_int(x['fn_id']))
+        return [Footnote(**{k: v for k, v in fn.items() if k != 'fn_refs'}) for fn in sorted_items]
+    except Exception as e:
+        logger.error(f"Failed to extract footnotes from {docx_path}: {e}")
+        # Return empty list instead of raising exception to prevent crashes
+        return []
 
 
 def _get_xml_from_docx(docx_path: str, path_in_zip: str):
