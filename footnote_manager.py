@@ -249,11 +249,46 @@ def _memory_first_lookup(parsed_ref: Dict[str, str], fn_id: str) -> Optional[Dic
     Perform memory-first lookup for a reference.
     Returns a dict with matched_ref, confidence, source, citation_type, doi, preview if found.
     """
-    # Access the citation memory functions directly (they're in the same file)
+    # Fuzzy matching for repeat citations: compare with stored references
+    author = parsed_ref.get('author', '').strip()
+    year = parsed_ref.get('year', '').strip()
+
+    if not author and not year:
+        return None
+
+    # Check all stored references for this footnote ID for similarity
+    if fn_id in _stored_references:
+        for short_cite_key, stored_full_ref in _stored_references.items():
+            # Parse the stored short citation key to get author/year
+            if ', ' in short_cite_key:
+                stored_author, stored_year = short_cite_key.split(', ', 1)
+                stored_author = stored_author.strip()
+                stored_year = stored_year.strip()
+
+                # Calculate similarity
+                author_sim = _calculate_similarity(author.lower(), stored_author.lower()) if author and stored_author else (0.0 if not author and not stored_author else (1.0 if author == stored_author else 0.0))
+                year_match = (year == stored_year) if year and stored_year else (True if not year and not stored_year else False)
+
+                # Consider it a repeat if author similarity is high and year matches
+                if author_sim >= 0.8 and year_match:
+                    # Calculate confidence based on similarity to the full reference
+                    confidence = _score_match(parsed_ref, stored_full_ref)
+                    # Boost confidence for repeat citations
+                    confidence = min(0.95, confidence + 0.1)
+
+                    return {
+                        'matched_ref': stored_full_ref,
+                        'confidence': confidence,
+                        'source': 'memory',
+                        'citation_type': 'REPEATED',
+                        'doi': '',  # Would need to extract from stored_ref or memory
+                        'preview': stored_full_ref[:50] + '...' if len(stored_full_ref) > 50 else stored_full_ref
+                    }
+
+    # Also check exact match for backward compatibility
     short_citation = parsed_ref.get('author', '') + ', ' + parsed_ref.get('year', '')
     short_citation = short_citation.strip(', ')
     if short_citation:
-        # Check if this is a repeat citation
         if is_repeat_citation(short_citation, fn_id):
             # Get the stored full reference
             stored_ref = get_stored_reference(short_citation)

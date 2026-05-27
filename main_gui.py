@@ -997,8 +997,12 @@ class ThesisApp:
         self._after_ids.clear()
         # Clear UI registry to prevent accidental accesses
         self.ui_registry.clear()
-        if self.editor_win:
-            self.editor_win.destroy()
+        # Safely destroy editor window if it exists
+        if hasattr(self, 'editor_win') and self.editor_win:
+            try:
+                self.editor_win.destroy()
+            except tk.TclError:
+                pass  # Already destroyed
 
     def _show_candidate_details(self, candidate):
         """Show detailed information about a candidate"""

@@ -13,7 +13,7 @@ def test_auto_match_reference():
 
     if result and isinstance(result, MatchResult):
         print(f"   Best match: {result.best_match.matched_ref}")
-        print(f   Confidence: {result.best_match.confidence:.2f}")
+        print(f"   Confidence: {result.best_match.confidence:.2f}")
         print(f"   Source: {result.best_match.source}")
         print(f"   Citation type: {result.best_match.citation_type}")
         print(f"   Number of candidates: {len(result.candidates)}")
