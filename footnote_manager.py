@@ -419,8 +419,8 @@ def _generate_local_variations(parsed_ref: Dict[str, str]) -> List[Dict[str, Any
 
 def auto_match_reference(fn_text: str, fn_id: str) -> Optional[MatchResult]:
     """
-    Automatically match a footnote text to references using memory-first approach.
-    Returns MatchResult with best match and candidates, or None if no match found.
+    Collect all possible candidate matches for a footnote text.
+    Returns MatchResult with candidates sorted by confidence (descending) and no auto-selection.
     """
     # Parse the footnote text
     parsed_ref = parse_footnote_text(fn_text)
@@ -429,24 +429,61 @@ def auto_match_reference(fn_text: str, fn_id: str) -> Optional[MatchResult]:
     if not parsed_ref.get('author') and not parsed_ref.get('year'):
         return None
 
+    candidates = []
+
     # Step 1: Try memory-first lookup (for REPEATED citations)
-    memory_result = _memory_first_lookup(parsed_ref, fn_id)
-    if memory_result:
-        # For REPEATED citations, we return a single high-confidence candidate
-        candidate = MatchCandidate(
-            matched_ref=memory_result['matched_ref'],
-            confidence=memory_result['confidence'],
-            source=memory_result['source'],
-            citation_type=memory_result['citation_type'],
-            doi=memory_result.get('doi', ''),
-            preview=memory_result.get('preview', '')
-        )
-        return MatchResult(best_match=candidate, candidates=[candidate])
+    # We collect all stored references that are similar enough to be considered repeats.
+    author = parsed_ref.get('author', '').strip()
+    year = parsed_ref.get('year', '').strip()
+    if author or year:
+        # Fuzzy matching for repeat citations: compare with stored references
+        if fn_id in _stored_references:
+            for short_cite_key, stored_full_ref in _stored_references.items():
+                # Parse the stored short citation key to get author/year
+                if ', ' in short_cite_key:
+                    stored_author, stored_year = short_cite_key.split(', ', 1)
+                    stored_author = stored_author.strip()
+                    stored_year = stored_year.strip()
 
-    # Step 2: For FULL citations, generate candidates
-    # Since Crossref is removed, we rely on memory and user input
-    # We'll generate multiple candidates including local variations
+                    # Calculate similarity
+                    author_sim = _calculate_similarity(author.lower(), stored_author.lower()) if author and stored_author else (0.0 if not author and not stored_author else (1.0 if author == stored_author else 0.0))
+                    year_match = (year == stored_year) if year and stored_year else (True if not year and not stored_year else False)
 
+                    # Consider it a repeat if author similarity is high and year matches
+                    if author_sim >= 0.8 and year_match:
+                        # Calculate confidence based on similarity to the full reference
+                        confidence = _score_match(parsed_ref, stored_full_ref)
+                        # Boost confidence for repeat citations (optional, we keep it for ranking)
+                        confidence = min(0.95, confidence + 0.1)
+
+                        candidate = MatchCandidate(
+                            matched_ref=stored_full_ref,
+                            confidence=confidence,
+                            source='memory',
+                            citation_type='REPEATED',
+                            doi='',  # Would need to extract from stored_ref or memory
+                            preview=stored_full_ref[:50] + '...' if len(stored_full_ref) > 50 else stored_full_ref
+                        )
+                        candidates.append(candidate)
+        # Also check exact match for backward compatibility (adds the exact stored reference if exists)
+        short_citation = parsed_ref.get('author', '') + ', ' + parsed_ref.get('year', '')
+        short_citation = short_citation.strip(', ')
+        if short_citation and is_repeat_citation(short_citation, fn_id):
+            stored_ref = get_stored_reference(short_citation)
+            if stored_ref:
+                confidence = _score_match(parsed_ref, stored_ref)
+                confidence = min(0.95, confidence + 0.1)
+                candidate = MatchCandidate(
+                    matched_ref=stored_ref,
+                    confidence=confidence,
+                    source='memory',
+                    citation_type='REPEATED',
+                    doi='',
+                    preview=stored_ref[:50] + '...' if len(stored_ref) > 50 else stored_ref
+                )
+                candidates.append(candidate)
+
+    # Step 2: For FULL citations, generate candidates (local variations)
     # Generate a reference string from parsed data
     author = parsed_ref.get('author', '')
     title = parsed_ref.get('title', '')
@@ -469,14 +506,13 @@ def auto_match_reference(fn_text: str, fn_id: str) -> Optional[MatchResult]:
             basic_ref += f" {year}"
         basic_ref += "."
     else:
-        # Not enough data to create a reference
-        return None
+        # Not enough data to create a reference; we will still return any memory candidates if exist
+        pass
 
     # Generate local variations to provide multiple candidates
     local_variations = _generate_local_variations(parsed_ref)
 
     # Score each variation and create candidates
-    candidates = []
     for variation in local_variations:
         # Calculate confidence based on similarity to original parsed reference
         confidence = _score_match(parsed_ref, variation['matched_ref'])
@@ -494,13 +530,15 @@ def auto_match_reference(fn_text: str, fn_id: str) -> Optional[MatchResult]:
         )
         candidates.append(candidate)
 
-    # Sort candidates by confidence (descending)
-    candidates.sort(key=lambda x: x.confidence, reverse=True)
-
+    # If no candidates at all, return None
     if not candidates:
         return None
 
-    return MatchResult(best_match=candidates[0], candidates=candidates)
+    # Sort candidates by confidence (descending)
+    candidates.sort(key=lambda x: x.confidence, reverse=True)
+
+    # Return all candidates; best_match is None to indicate no auto-selection
+    return MatchResult(best_match=None, candidates=candidates)
 
 
 # Citation memory storage (simplified version)
