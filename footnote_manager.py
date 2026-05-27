@@ -497,13 +497,10 @@ def auto_match_reference(fn_text: str, fn_id: str) -> Optional[MatchResult]:
     # Sort candidates by confidence (descending)
     candidates.sort(key=lambda x: x.confidence, reverse=True)
 
-    # Return top 3 candidates (or fewer if we don't have 3)
-    top_candidates = candidates[:3]
-
-    if not top_candidates:
+    if not candidates:
         return None
 
-    return MatchResult(best_match=top_candidates[0], candidates=top_candidates)
+    return MatchResult(best_match=candidates[0], candidates=candidates)
 
 
 # Citation memory storage (simplified version)
