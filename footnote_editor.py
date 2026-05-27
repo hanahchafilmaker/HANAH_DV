@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import csv
 import footnote_manager as fm
 
 class FootnoteEditor(tk.Tk):
