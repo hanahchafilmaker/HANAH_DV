@@ -14,6 +14,107 @@ import threading
 import queue
 
 
+class UIFactory:
+    """Factory class for creating UI elements in a thread-safe manner"""
+
+    def __init__(self, parent, ui_registry):
+        self.parent = parent
+        self.ui_registry = ui_registry
+
+    def create_candidate_frame(self, fn):
+        """Create candidate frame for a footnote - returns None if creation fails"""
+        fn_id = fn["fn_id"]
+
+        # SAFE INIT STATE
+        candidate_frame = None
+
+        try:
+            # CREATE ONLY
+            candidate_frame = ttk.Frame(self.parent)
+            candidate_frame.columnconfigure(0, weight=1)
+
+            # Initialize candidate visibility in footnote data
+            fn['candidate_visible'] = False
+
+        except Exception as e:
+            print(f"[UI FACTORY ERROR] Failed to create candidate frame for fn_id={fn_id}: {e}")
+            return None  # 실패는 실패로 끝냄
+
+        # SAFE REGISTER
+        if candidate_frame is not None:
+            self.ui_registry.setdefault(fn_id, {})["candidate_frame"] = candidate_frame
+
+        return candidate_frame
+
+    def create_footnote_ui_elements(self, fn):
+        """Create all UI elements for a footnote row - returns dict of elements or None if failed"""
+        fn_id = fn["fn_id"]
+
+        # SAFE INIT STATE - initialize all to None
+        orig_widget = None
+        ref_widget = None
+        type_label = None
+        matched_var = None
+        conf_label = None
+        doi_label = None
+        candidate_btn = None
+
+        try:
+            # CREATE ONLY - Original text (read-only)
+            orig_widget = tk.Text(self.parent, height=3, width=25, wrap=tk.WORD)
+            orig_widget.insert(tk.END, fn['fn_text'])
+            orig_widget.config(state=tk.DISABLED, background=self.parent.cget('bg'))
+
+            # Editable reference
+            ref_widget = tk.Text(self.parent, height=3, width=30, wrap=tk.WORD)
+            ref_widget.insert(tk.END, '')  # start empty for user to fill
+
+            # Citation type label
+            type_label = ttk.Label(self.parent, text="", width=8)
+
+            # Match checkbox
+            matched_var = tk.BooleanVar(value=False)
+
+            # Confidence label
+            conf_label = ttk.Label(self.parent, text="", width=8)
+
+            # DOI label
+            doi_label = ttk.Label(self.parent, text="", width=10, foreground="blue", cursor="hand2")
+
+            # Candidate toggle button
+            candidate_btn = ttk.Button(self.parent, text="후보 보기", width=8)
+
+        except Exception as e:
+            print(f"[UI FACTORY ERROR] Failed to create UI elements for fn_id={fn_id}: {e}")
+            return None
+
+        # SAFE REGISTER - only register if all elements were created successfully
+        if all(elem is not None for elem in [orig_widget, ref_widget, type_label, matched_var, conf_label, doi_label, candidate_btn]):
+            self.ui_registry.setdefault(fn_id, {}).update({
+                'orig_widget': orig_widget,
+                'ref_widget': ref_widget,
+                'type_label': type_label,
+                'matched_var': matched_var,
+                'conf_label': conf_label,
+                'doi_label': doi_label,
+                'candidate_btn': candidate_btn
+            })
+            return {
+                'orig_widget': orig_widget,
+                'ref_widget': ref_widget,
+                'type_label': type_label,
+                'matched_var': matched_var,
+                'conf_label': conf_label,
+                'doi_label': doi_label,
+                'candidate_btn': candidate_btn
+            }
+        else:
+            return None
+
+
+# Queue-based dispatcher for thread-safe UI updates
+
+
 class ThesisApp:
     def __init__(self, root):
         self.root = root
@@ -32,6 +133,9 @@ class ThesisApp:
         # Queue-based dispatcher for thread-safe UI updates
         self.ui_queue = queue.Queue()
         self.processing_job = False
+
+        # Initialize UI Factory for safe UI creation
+        self.ui_factory = UIFactory(self, self.ui_registry)
 
         tk.Label(root, text="Word 문서 선택 (각주 추출 및 편집)", font=("Arial", 14)).pack(pady=10)
 
@@ -134,54 +238,48 @@ class ThesisApp:
         ttk.Label(header, text="DOI", width=10).pack(side=tk.LEFT)
 
         for i, fn in enumerate(self.footnotes, start=1):
+            # Create row container
             row = ttk.Frame(scrollable)
             row.pack(fill=tk.X, padx=5, pady=2)
+
+            # Create UI elements using factory (thread-safe)
+            ui_elements = self.ui_factory.create_footnote_ui_elements(row)
+            if ui_elements is None:
+                # Skip this footnote if UI creation failed
+                continue
+
+            orig = ui_elements['orig_widget']
+            ref = ui_elements['ref_widget']
+            type_label = ui_elements['type_label']
+            matched_var = ui_elements['matched_var']
+            conf_label = ui_elements['conf_label']
+            doi_label = ui_elements['doi_label']
+            candidate_btn = ui_elements['candidate_btn']
+
+            # Layout UI elements
             ttk.Label(row, text=str(i), width=4, anchor=tk.CENTER).pack(side=tk.LEFT)
-            # Original text (read-only)
-            orig = tk.Text(row, height=3, width=25, wrap=tk.WORD)
-            orig.insert(tk.END, fn['fn_text'])
-            orig.config(state=tk.DISABLED, background=editor.cget('bg'))
             orig.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=False)
-            # Editable reference
-            ref = tk.Text(row, height=3, width=30, wrap=tk.WORD)
-            ref.insert(tk.END, '')  # start empty for user to fill
             ref.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=False)
-            # Citation type label
-            type_label = ttk.Label(row, text="", width=8)
             type_label.pack(side=tk.LEFT, padx=2)
-            # Match checkbox
-            matched_var = tk.BooleanVar(value=False)
-            chk = ttk.Checkbutton(row, variable=matched_var)
-            chk.pack(side=tk.LEFT, padx=5)
-            # Confidence label
-            conf_label = ttk.Label(row, text="", width=8)
+            matched_var_chk = ttk.Checkbutton(row, variable=matched_var)
+            matched_var_chk.pack(side=tk.LEFT, padx=5)
             conf_label.pack(side=tk.LEFT, padx=2)
-            # DOI label
-            doi_label = ttk.Label(row, text="", width=10, foreground="blue", cursor="hand2")
             doi_label.pack(side=tk.LEFT, padx=2)
-            # Make DOI label clickable
-            doi_label.bind("<Button-1>", lambda e, doi="": self._show_doi_popup(doi))
-            # Candidate toggle button
-            candidate_btn = ttk.Button(row, text="후보 보기", width=8)
             candidate_btn.pack(side=tk.LEFT, padx=2)
 
-            # Candidate display container (initially hidden) - stored in ui_registry only
-            candidate_frame = ttk.Frame(scrollable)
-            candidate_frame.columnconfigure(0, weight=1)
+            # Make DOI label clickable
+            doi_label.bind("<Button-1>", lambda e, doi="": self._show_doi_popup(doi))
+
+            # Candidate display container (initially hidden) - created via factory
+            candidate_frame = self.ui_factory.create_candidate_frame(fn)
             # Initialize candidate visibility in footnote data
             fn['candidate_visible'] = False
 
-            # Store UI elements in the registry (UI thread only)
-            self.ui_registry[fn['fn_id']] = {
-                'conf_label': conf_label,
-                'doi_label': doi_label,
-                'type_label': type_label,
-                'ref_widget': ref,
-                'matched_var': matched_var,
-                'candidate_frame': candidate_frame,
-                'candidate_btn': candidate_btn
-            }
+            # Register candidate frame if it was created successfully
+            if candidate_frame is not None:
+                self.ui_registry.setdefault(fn['fn_id'], {})['candidate_frame'] = candidate_frame
 
+            # Store edited row data
             self.edited_rows.append({
                 'fn_id': fn['fn_id'],
                 'orig_widget': orig,
@@ -259,13 +357,13 @@ class ThesisApp:
 
         # Check if widgets still exist
         try:
-            if not conf_label.winfo_exists():
+            if conf_label is None or not conf_label.winfo_exists():
                 return
-            if not doi_label.winfo_exists():
+            if doi_label is None or not doi_label.winfo_exists():
                 return
             if type_label is not None and not type_label.winfo_exists():
                 return
-            if not ref_widget.winfo_exists():
+            if ref_widget is None or not ref_widget.winfo_exists():
                 return
         except tk.TclError:
             # Widget has been destroyed
@@ -729,6 +827,10 @@ class ThesisApp:
 
         candidate_frame = ui_elements.get('candidate_frame')
         candidate_btn = ui_elements.get('candidate_btn')
+
+        # Check if widgets exist
+        if candidate_frame is None or candidate_btn is None:
+            return
 
         # Check if widgets still exist
         try:
