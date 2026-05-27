@@ -165,6 +165,12 @@ class ThesisApp:
             candidate_btn = ttk.Button(row, text="후보 보기", width=8)
             candidate_btn.pack(side=tk.LEFT, padx=2)
 
+            # Candidate display container (initially hidden) - stored in ui_registry only
+            candidate_frame = ttk.Frame(scrollable)
+            candidate_frame.columnconfigure(0, weight=1)
+            # Initialize candidate visibility in footnote data
+            fn['candidate_visible'] = False
+
             # Store UI elements in the registry (UI thread only)
             self.ui_registry[fn['fn_id']] = {
                 'conf_label': conf_label,
@@ -186,12 +192,6 @@ class ThesisApp:
                 'index': i,
                 'fn_text': fn['fn_text']
             })
-
-            # Candidate display container (initially hidden) - stored in ui_registry only
-            candidate_frame = ttk.Frame(scrollable)
-            candidate_frame.columnconfigure(0, weight=1)
-            # Initialize candidate visibility in footnote data
-            fn['candidate_visible'] = False
 
             # Configure candidate button to toggle candidate display
             candidate_btn.configure(command=lambda f_id=fn['fn_id']: self._toggle_candidate_display(f_id))
@@ -630,6 +630,10 @@ class ThesisApp:
 
         candidate_frame = ui_elements.get('candidate_frame')
         candidate_btn = ui_elements.get('candidate_btn')
+
+        # Check if widgets exist
+        if candidate_frame is None or candidate_btn is None:
+            return
 
         # Check if widgets still exist
         try:
