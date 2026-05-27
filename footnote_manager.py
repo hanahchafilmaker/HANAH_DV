@@ -269,7 +269,7 @@ def _deduplicate_candidates(candidates: List[MatchCandidate]) -> List[MatchCandi
 def _calculate_similarity_score(parsed_ref: Dict[str, str], candidate_ref: str, source: str) -> float:
     """
     Calculate similarity score between parsed reference and candidate reference
-    Based on title, author, and year similarity with source bonus
+    Based on title, author, and year similarity with DOI/ISBN bonuses and source bonus
     Returns score between 0.0 and 1.0
     """
     if not parsed_ref or not candidate_ref:
@@ -279,6 +279,8 @@ def _calculate_similarity_score(parsed_ref: Dict[str, str], candidate_ref: str, 
     parsed_title = parsed_ref.get("title", "").lower()
     parsed_author = parsed_ref.get("author", "").lower()
     parsed_year = parsed_ref.get("year", "")
+    parsed_doi = parsed_ref.get("doi", "").lower()
+    parsed_isbn = parsed_ref.get("isbn", "")
 
     # Extract components from candidate reference (simplified parsing)
     candidate_lower = candidate_ref.lower()
@@ -301,8 +303,19 @@ def _calculate_similarity_score(parsed_ref: Dict[str, str], candidate_ref: str, 
         if parsed_year in candidate_ref:
             year_match = 1.0
 
-    # Weighted combination
+    # Weighted combination (title 0.4, author 0.4, year 0.2)
     score = (0.4 * title_sim) + (0.4 * author_sim) + (0.2 * year_match)
+
+    # Apply DOI bonus
+    if parsed_doi and parsed_doi in candidate_lower:
+        score = min(1.0, score + 0.3)  # DOI match bonus
+
+    # Apply ISBN bonus
+    if parsed_isbn:
+        # Normalize ISBN for comparison (remove dashes/spaces)
+        normalized_isbn = re.sub(r'[- ]', '', parsed_isbn).upper()
+        if normalized_isbn in candidate_ref.upper():
+            score = min(1.0, score + 0.25)  # ISBN match bonus
 
     # Apply source bonus
     if source == "memory":
@@ -538,6 +551,8 @@ def clean_reference(fn_text):
     - author: 추정된 저자 (없으면 empty string)
     - title: 추정된 제목 (없으면 empty string)
     - year: 추정된 연도 (없으면 empty string)
+    - doi: 추정된 DOI (없으면 empty string)
+    - isbn: 추정된 ISBN (없으면 empty string)
     """
     if not fn_text or not isinstance(fn_text, str):
         return {
@@ -545,7 +560,9 @@ def clean_reference(fn_text):
             "cleaned": "",
             "author": "",
             "title": "",
-            "year": ""
+            "year": "",
+            "doi": "",
+            "isbn": ""
         }
 
     raw = fn_text.strip()
@@ -554,6 +571,21 @@ def clean_reference(fn_text):
 
     # 따옴표 정규화
     cleaned = cleaned.replace('""', '"').replace("''", "'")
+
+    # DOI 추출
+    doi_pattern = re.compile(r'(?:DOI|doi)[\s:]*([^\s]+)', re.IGNORECASE)
+    doi_match = doi_pattern.search(raw)
+    doi = doi_match.group(1).strip().lower() if doi_match else ""
+
+    # ISBN 추출
+    isbn_pattern = re.compile(
+        r'(?:ISBN(?:-1[03])?[:\s]*)?(97[89][- ]?(?:\d[- ]?){9}\d|\d{9}[\dXx])'
+    )
+    isbn_match = isbn_pattern.search(raw)
+    isbn = isbn_match.group(0).strip() if isbn_match else ""
+    # ISBN에서 공백과 대시 제거
+    if isbn:
+        isbn = re.sub(r'[- ]', '', isbn).upper()
 
     # 연도 추출 (4자리 숫자, 1000-2029 사이)
     year_match = re.search(r'\b(1[0-9]{3}|2[0-2][0-9]{3})\b', cleaned)
@@ -590,7 +622,9 @@ def clean_reference(fn_text):
         "cleaned": cleaned,
         "author": author,
         "title": title,
-        "year": year
+        "year": year,
+        "doi": doi,
+        "isbn": isbn
     }
 
 
@@ -775,7 +809,7 @@ def auto_match_reference(fn_text, fn_id=None):
                 confidence=memory_score,
                 source="memory",
                 citation_type="FULL",
-                doi="",
+                doi=parsed.get("doi", ""),
                 preview=memory_preview
             )
             candidates.append(memory_candidate)
@@ -791,7 +825,7 @@ def auto_match_reference(fn_text, fn_id=None):
                         current["crossref"] = crossref_item
 
             if current["crossref"]:
-                # Crossref 데이터가 있으면それを使ってフォーマット
+                # Crossref 데이터가 있으면 그것을使ってフォーマット
                 crossref_ref = format_reference_from_crossref(current["crossref"])
                 doi = current["crossref"].get("DOI", "")
                 crossref_score = _calculate_similarity_score(parsed, crossref_ref, "crossref")
