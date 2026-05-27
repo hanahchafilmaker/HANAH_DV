@@ -1010,7 +1010,6 @@ class ThesisApp:
         text.pack(fill=tk.BOTH, expand=True)
 
         details = f"매칭 참고문헌:\n{candidate.matched_ref}\n\n"
-        details += f"후보 ID: {candidate.candidate_id}\n"
         details += f"신뢰도: {candidate.confidence*100:.1f}%\n"
         details += f"출처: {candidate.source}\n"
         details += f"인용 유형: {candidate.citation_type}\n"
