@@ -1,4 +1,4 @@
-from ttkbootstrap import Frame, Label
+from ttkbootstrap import Frame, Label, Canvas, Scrollbar
 
 class CenterTablePanel(Frame):
     def __init__(self, parent, controller, state, right_panel, set_status):
@@ -10,6 +10,7 @@ class CenterTablePanel(Frame):
 
         # Selected footnote ID for highlighting
         self.selected_fn_id = None
+        self._sync_callback = None  # Callback for syncing scroll with other panels
 
         # Container for scrollable content
         self.container = Frame(self)
@@ -18,12 +19,53 @@ class CenterTablePanel(Frame):
         # Header
         self.create_header()
 
-        # Scrollable frame for rows
-        self.rows_frame = Frame(self.container)
-        self.rows_frame.pack(fill="both", expand=True, pady=(5, 0))
+        # Create canvas and scrollbar for scrolling
+        self.canvas = Canvas(self.container, borderwidth=0, highlightthickness=0)
+        self.scrollbar = Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self._on_canvas_scroll)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Frame inside canvas to hold rows
+        self.rows_frame = Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.rows_frame, anchor="nw", tags="self.rows_frame")
+
+        # Configure rows_frame to expand canvas width
+        self.rows_frame.bind("<Configure>", self._on_frame_configure)
 
         # Bind selection event from state
         self.state.trace_add("selected_fn_id", self.on_state_selection_change)
+
+        # Mouse wheel scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def set_sync_callback(self, callback):
+        """Set callback for scroll synchronization with other panels"""
+        self._sync_callback = callback
+
+    def _on_frame_configure(self, event):
+        """Reset the scroll region to encompass the inner frame"""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling"""
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        # Notify sync callback if set
+        if self._sync_callback:
+            self._sync_callback('center', self.canvas.yview())
+
+    def _on_canvas_scroll(self, *args):
+        """Handle scroll event from canvas"""
+        self.scrollbar.set(*args)
+        # Notify sync callback if set
+        if self._sync_callback:
+            self._sync_callback('center', args)
+
+    def scroll_to_position(self, position):
+        """Scroll to a specific position (0.0 to 1.0)"""
+        self.canvas.yview_moveto(position)
+        self.scrollbar.set(position, position + 0.1)  # Approximate thumb size
 
     def create_header(self):
         """Create table header"""
@@ -155,3 +197,56 @@ class CenterTablePanel(Frame):
         # In a more optimized version, we'd just update the specific row
         if hasattr(self.state, 'footnotes'):
             self.load_data(self.state.footnotes)
+
+    def move_up(self):
+        """Move selection up"""
+        if not hasattr(self.state, 'footnotes') or not self.state.footnotes:
+            return
+
+        current_index = -1
+        if self.state.selected_fn_id is not None:
+            # Find current index
+            for i, fn in enumerate(self.state.footnotes):
+                if str(fn.get('fn_id', '')) == str(self.state.selected_fn_id):
+                    current_index = i
+                    break
+
+        # Move up (decrease index)
+        new_index = max(0, current_index - 1) if current_index >= 0 else 0
+
+        # Select the footnote at new index
+        if new_index < len(self.state.footnotes):
+            fn_id = self.state.footnotes[new_index].get('fn_id')
+            self.controller.select_footnote(fn_id)
+
+    def move_down(self):
+        """Move selection down"""
+        if not hasattr(self.state, 'footnotes') or not self.state.footnotes:
+            return
+
+        current_index = -1
+        if self.state.selected_fn_id is not None:
+            # Find current index
+            for i, fn in enumerate(self.state.footnotes):
+                if str(fn.get('fn_id', '')) == str(self.state.selected_fn_id):
+                    current_index = i
+                    break
+
+        # Move down (increase index)
+        new_index = min(len(self.state.footnotes) - 1, current_index + 1) if current_index >= 0 else 0
+
+        # Select the footnote at new index
+        if new_index < len(self.state.footnotes):
+            fn_id = self.state.footnotes[new_index].get('fn_id')
+            self.controller.select_footnote(fn_id)
+
+    def select_best(self):
+        """Select the best candidate for the currently selected footnote"""
+        if self.state.selected_fn_id is None:
+            return
+
+        # Check if we have match results for the selected footnote
+        match_result = self.state.match_results.get(str(self.state.selected_fn_id))
+        if match_result and hasattr(match_result, 'best_match') and match_result.best_match:
+            # Apply the best match
+            self.controller.apply_candidate(str(self.state.selected_fn_id), match_result.best_match)
