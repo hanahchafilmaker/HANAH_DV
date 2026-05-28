@@ -1,6 +1,6 @@
 from ttkbootstrap import Frame, Label, Text, Button
 
-from app.ui.panels.candidate_panel import CandidateCard
+from app.ui.panels.candidate_card import CandidateCard
 
 class RightEditorPanel:
     def __init__(self, parent, controller, state, set_status):

@@ -51,7 +51,14 @@ class EditorController:
 
             self.set_status("Selected footnote {}".format(fn_id), "info")
 
-        # UI will update via state binding
+        # Explicitly refresh UI panels (MVC pattern)
+        if self.left_panel:
+            self.left_panel.update_footnotes_with_selection(self.state.footnotes)
+        if self.center_panel:
+            self.center_panel.load_data(self.state.footnotes)
+        if hasattr(self, 'right_panel') and self.right_panel:
+            # Right panel will be updated via the controller's refresh mechanism in layout.py
+            pass
 
     # -------------------------
     # CANDIDATE APPLICATION

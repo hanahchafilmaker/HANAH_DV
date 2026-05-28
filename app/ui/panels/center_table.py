@@ -34,8 +34,8 @@ class CenterTablePanel(Frame):
         # Configure rows_frame to expand canvas width
         self.rows_frame.bind("<Configure>", self._on_frame_configure)
 
-        # Bind selection event from state
-        self.state.trace_add("selected_fn_id", self.on_state_selection_change)
+        # Selection binding removed - controller will call refresh methods directly
+        pass
 
         # Mouse wheel scrolling
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)

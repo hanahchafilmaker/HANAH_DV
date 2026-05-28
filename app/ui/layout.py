@@ -77,13 +77,16 @@ class MainLayout(Frame):
             self.right_panel,
             self.set_status
         )
-        # Set back-reference so controller can update left panel
+        # Set back-references so controller can update panels directly
         self.controller.left_panel = self.left_panel
+        self.controller.right_panel = self.right_panel
+        self.controller.center_panel = self.center_panel
         # Set up toolbar reference (will be set after toolbar creation)
-        # Set sync callback for center panel
+        # Set sync callbacks for scroll synchronization
+        self.left_panel.set_sync_callback(self._on_left_scroll)
         self.center_panel.set_sync_callback(self._on_center_scroll)
 
-    def _on_left_scroll(self, fraction):
+    def _on_left_scroll(self, source, fraction):
         """Handle scroll event from left panel"""
         # Avoid loops
         if self._last_left_fraction == fraction:
@@ -93,7 +96,7 @@ class MainLayout(Frame):
         self.center_panel.scroll_to_position(fraction)
         self._last_center_fraction = fraction
 
-    def _on_center_scroll(self, fraction):
+    def _on_center_scroll(self, source, fraction):
         """Handle scroll event from center panel"""
         # Avoid loops
         if self._last_center_fraction == fraction:
