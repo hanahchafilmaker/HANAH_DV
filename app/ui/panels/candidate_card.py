@@ -1,29 +1,47 @@
 from ttkbootstrap import Frame, Label, Button
 
 class CandidateCard(Frame):
-    def __init__(self, parent, data, on_select):
-        # We call the parent's __init__ with bootstyle="light" for the card look
+    def __init__(self, parent, data, on_select, selected=False):
         super().__init__(parent, bootstyle="light")
 
         self.data = data
         self.on_select = on_select
+        self.selected = selected
 
-        # Title of the candidate (e.g., the matched reference or a preview)
         self.label = Label(self, text=data["title"], wraplength=350)
         self.label.pack(anchor="w", padx=5, pady=(5,0))
 
-        # Confidence label
         self.conf = Label(self, text=f"{data['confidence']*100:.1f}%")
         self.conf.pack(anchor="w", padx=5)
 
-        # Select button
         btn = Button(self, text="Select", command=self.select, bootstyle="success")
         btn.pack(anchor="e", padx=5, pady=5)
 
-        # Hover effect to give a Zotero-like feel
-        self.bind("<Enter>", lambda e: self.config(bootstyle="info"))
-        self.bind("<Leave>", lambda e: self.config(bootstyle="light"))
+        # Apply initial styles based on selected state
+        self.apply_styles()
+
+        # Hover effects (only when not selected)
+        self.bind("<Enter>", self.on_enter)
+        self.bind("<Leave>", self.on_leave)
+
+    def apply_styles(self):
+        if self.selected:
+            self.configure(bootstyle="success")
+        else:
+            self.configure(bootstyle="light")
+
+    def on_enter(self, event):
+        if not self.selected:
+            self.configure(bootstyle="info")
+
+    def on_leave(self, event):
+        if not self.selected:
+            self.configure(bootstyle="light")
+
+    def set_selected(self, selected):
+        self.selected = selected
+        self.apply_styles()
 
     def select(self):
-        # When the card is selected, call the on_select callback with the candidate data
+        self.set_selected(True)
         self.on_select(self.data)

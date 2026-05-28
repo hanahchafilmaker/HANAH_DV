@@ -1,6 +1,6 @@
 from ttkbootstrap import Frame, Label, Text, Button
 
-from app.ui.panels.candidate_card import CandidateCard
+from app.ui.panels.candidate_panel import CandidateCard
 
 class RightEditorPanel:
     def __init__(self, parent, controller, state, set_status):
@@ -77,11 +77,22 @@ class RightEditorPanel:
             candidates = []
 
         # If we have candidates, show up to 5
+        selected_candidate_ref = None
+        if hasattr(result, 'best_match') and result.best_match is not None:
+            selected_candidate_ref = result.best_match.matched_ref
+        elif isinstance(result, dict) and 'matched_ref' in result:
+            selected_candidate_ref = result['matched_ref']
+
         for c in candidates[:5]:
+            # Check if this candidate is the currently selected one
+            is_selected = (selected_candidate_ref is not None and
+                          c.matched_ref == selected_candidate_ref)
+
             card = CandidateCard(
                 self.cards_frame,
                 c,
-                self.select_candidate
+                self.select_candidate,
+                selected=is_selected
             )
             card.pack(fill="x", pady=5)
 
