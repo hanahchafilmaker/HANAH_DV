@@ -1,4 +1,4 @@
-from app.core import footnote_manager as fm
+import app.core.footnote_manager as fm
 from app.core import engine
 
 class EditorController:
@@ -175,8 +175,7 @@ class EditorController:
                     entries.append(entry)
 
         # Generate BibTeX (simplified)
-        from app.core import footnote_manager
-        bibtex_content = footnote_manager.bibliography_to_bibtex(entries)
+        bibtex_content = fm.bibliography_to_bibtex(entries)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(bibtex_content)
 
@@ -194,7 +193,7 @@ class EditorController:
         sorted_candidates = sorted(candidates, key=lambda x: x.confidence, reverse=True)
 
         # Return MatchResult with best_match as first candidate
-        from app.core import footnote_manager as fm
+        import app.core.footnote_manager as fm
         return fm.MatchResult(
             best_match=sorted_candidates[0],
             candidates=sorted_candidates

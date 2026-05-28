@@ -59,7 +59,7 @@ class MainLayout(Frame):
         # create panels in safe order
         # -------------------------
 
-        self.left_panel = LeftDocPanel(self.left)
+        self.left_panel = LeftDocPanel(self.left, self.controller, self.state)
         # Set sync callback for left panel
         self.left_panel.set_sync_callback(self._on_left_scroll)
 
@@ -77,6 +77,9 @@ class MainLayout(Frame):
             self.right_panel,
             self.set_status
         )
+        # Set back-reference so controller can update left panel
+        self.controller.left_panel = self.left_panel
+        # Set up toolbar reference (will be set after toolbar creation)
         # Set sync callback for center panel
         self.center_panel.set_sync_callback(self._on_center_scroll)
 

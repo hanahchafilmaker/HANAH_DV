@@ -11,6 +11,9 @@ class LeftDocPanel(Frame):
         self.selected_fn_id = None
         self._sync_callback = None  # Callback for syncing scroll with other panels
         self._create_widgets()
+        # Trace state changes for selected_fn_id to update highlighting
+        if self.state:
+            self.state.trace_add("selected_fn_id", self._on_state_selected_fn_id_change)
 
     def _create_widgets(self):
         # Header
